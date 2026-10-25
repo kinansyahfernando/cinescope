@@ -1,458 +1,386 @@
 <?php
-// File: film.sore.php (FIXED - Show All Reviews + Trailer Button)
+// File: film_sore.php
+// Halaman film "Sore" (ID 1) VERSI TAMU (index.php): hanya melihat review & rating.
+// - Tamu (belum login) : bisa membaca review, diarahkan login untuk menulis review
+// - User (sudah login) : bisa memberi rating (1-5 bintang), menulis/mengedit/menghapus review, dan menyukai review user lain
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
-session_start();
 
-$MOVIE_ID = 1; 
-$CURRENT_USER_NAME = $_SESSION['username'] ?? 'Pengguna CineScope Baru';
-$IS_LOGGED_IN = !empty($_SESSION['user_id']);
-$USER_ID = $IS_LOGGED_IN ? (int)$_SESSION['user_id'] : 0;
+// Koneksi + session dari config.php (database: movie_review_db)
+require __DIR__ . '/config.php';
+$pdo = db();
+if (session_status() === PHP_SESSION_NONE) session_start();
 
-// Database Configuration
-$host = '127.0.0.1';
-$dbname = 'movie_review_db';
-$username = 'root';
-$password = '';
+// VERSI TAMU: hanya melihat review & rating, tidak ada form/aksi apa pun.
+$isLoggedIn = false;
+$userId     = 0;
+$homeUrl    = 'index.php';
 
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch(PDOException $e) {
-    die("❌ Error Koneksi Database: " . $e->getMessage());
+// ---------- Helper ----------
+function cs_e($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+
+function cs_columnExists(PDO $pdo, $table, $column) {
+    try {
+        $st = $pdo->prepare("SHOW COLUMNS FROM `$table` LIKE ?");
+        $st->execute([$column]);
+        return (bool)$st->fetch();
+    } catch (PDOException $e) {
+        return false;
+    }
 }
 
-// 🔥 AMBIL DATA FILM DARI DATABASE
+function cs_getPosterPath($posterFromDB) {
+    if (empty($posterFromDB)) return null;
+    foreach (array(__DIR__ . '/' . $posterFromDB, $posterFromDB) as $path) {
+        if (file_exists($path)) return $posterFromDB;
+    }
+    return null;
+}
+
+function cs_formatTanggalID($date) {
+    $bulan = array(1 => 'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des');
+    $t = strtotime($date);
+    return $t ? date('j', $t) . ' ' . $bulan[(int)date('n', $t)] . ' ' . date('Y', $t) : '';
+}
+
+function cs_youtubeId($url) {
+    if (preg_match('~(?:youtube\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/)|youtu\.be/)([A-Za-z0-9_-]{11})~', (string)$url, $m)) {
+        return $m[1];
+    }
+    return null;
+}
+
+function cs_starsHtml($rating) {
+    $rating = max(0, min(5, (float)$rating));
+    $html = '';
+    for ($i = 1; $i <= 5; $i++) {
+        if ($rating >= $i - 0.25)       $html .= '<i class="fas fa-star"></i>';
+        elseif ($rating >= $i - 0.75)   $html .= '<i class="fas fa-star-half-alt"></i>';
+        else                            $html .= '<i class="far fa-star"></i>';
+    }
+    return $html;
+}
+
+// ---------- Ambil film ----------
+// Default: film Sore (ID 1). Film baru dari admin.php dibuka lewat file ini juga dengan ?id=ID_FILM
+$movieId = isset($_GET['id']) ? (int)$_GET['id'] : 1;
 $stmt = $pdo->prepare("SELECT * FROM movies WHERE id = ?");
-$stmt->execute([$MOVIE_ID]);
+$stmt->execute([$movieId]);
 $movie = $stmt->fetch(PDO::FETCH_ASSOC);
 
-$defaultTitle = 'Sore (Ada Apa Dengan Cinta? 3)';
-$defaultPoster = 'uploads/posters/poster_sore.jpg';
-$defaultYear = '2025';
-$defaultGenre = 'Drama, Romantis';
-$defaultDirector = 'Riri Riza';
-$defaultCast = 'Dian Sastro, Nicholas Saputra';
-
-$title = $movie['title'] ?? $defaultTitle;
-$posterPath = $movie['poster'] ?? $defaultPoster;
-$releaseYear = $movie['release_year'] ?? $defaultYear;
-$genre = $movie['genre'] ?? $defaultGenre;
-$director = $movie['director'] ?? $defaultDirector;
-$cast = $movie['cast'] ?? $defaultCast;
-
-// 🔥 FIXED: Render HTML untuk SEMUA ulasan
-function generate_reviews_html($reviews, $default_user_name) {
-    ob_start();
-    if (count($reviews) > 0):
-        foreach ($reviews as $review): ?>
-            <div class="review-item">
-                <div class="rating-display">
-                    <?php
-                        $starHtml = '';
-                        for ($i = 1; $i <= 5; $i++) {
-                            $color = $i <= $review['rating'] ? 'var(--star-gold)' : '#444';
-                            $starHtml .= '<i class="fas fa-star" style="color: ' . $color . '; font-size: 1.1rem;"></i>';
-                        }
-                        echo $starHtml;
-                    ?>
-                </div>
-                <p><?php echo htmlspecialchars($review['review_text'] ?: '(Tidak ada ulasan tertulis)'); ?></p>
-                <div class="reviewer-info">
-                    Oleh: <?php echo htmlspecialchars($review['display_name']); ?> 
-                    - 
-                    <?php echo date('d M Y, H:i', strtotime($review['created_at'])); ?>
-                </div>
-            </div>
-        <?php endforeach;
-    else: ?>
-        <p style="color:#777; font-style: italic;">Belum ada ulasan untuk film ini.</p>
-    <?php endif;
-
-    return ob_get_clean();
-}
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['is_ajax']) && $_POST['is_ajax'] == 1) {
-    header('Content-Type: application/json; charset=utf-8');
-
-    $response = ['success' => false, 'message' => ''];
-    // 🔒 Hanya user yang sudah login yang boleh memberi rating & ulasan
-    if (!$IS_LOGGED_IN) {
-        http_response_code(401);
-        $response['message'] = 'Anda harus login terlebih dahulu untuk memberi rating dan ulasan.';
-        $response['login_required'] = true;
-        echo json_encode($response);
-        exit;
-    }
-
-    $rating = (float)($_POST['rating'] ?? 0);
-    $reviewText = trim($_POST['reviewText'] ?? '');
-
-    if ($rating < 1 || $rating > 5) {
-        $response['message'] = 'Rating harus diisi antara 1 sampai 5 bintang!';
-        echo json_encode($response);
-        exit;
-    }
-
-    try {
-        $sql = "INSERT INTO reviews (movie_id, user_id, rating, review_text, created_at, updated_at) 
-                VALUES (?, ?, ?, ?, NOW(), NOW())";
-        
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([$MOVIE_ID, $USER_ID, $rating, $reviewText]);
-
-        $response['success'] = true;
-        $response['message'] = 'Ulasan Anda berhasil ditambahkan!';
-
-    } catch (PDOException $e) {
-        $response['message'] = 'Error Database saat menyimpan ulasan: ' . $e->getMessage();
-    }
-
-    echo json_encode($response);
+if (!$movie) {
+    http_response_code(404);
+    ?><!DOCTYPE html><html lang="id"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Film tidak ditemukan</title>
+    <style>body{background:#0a0a0a;color:#fff;font-family:Inter,Segoe UI,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;text-align:center}a{color:#e50914;font-weight:600}</style></head>
+    <body><div><h1>🎬 Film tidak ditemukan</h1><p style="margin:12px 0 20px;color:#999">Film yang Anda cari tidak ada atau sudah dihapus.</p><a href="<?php echo cs_e($homeUrl); ?>">← Kembali ke Beranda</a></div></body></html><?php
     exit;
 }
 
-// 🔥 FIXED: Ambil SEMUA ulasan
-$allReviewsStmt = $pdo->prepare("
-    SELECT r.id, r.movie_id, r.user_id, r.rating, r.review_text, r.created_at, r.user_name as review_user_name,
-    COALESCE(u.full_name, u.username, r.user_name, 'Pengguna CineScope') as display_name
-    FROM reviews r
-    LEFT JOIN users u ON r.user_id = u.id
-    WHERE r.movie_id = ?
-    ORDER BY r.created_at DESC
-");
-$allReviewsStmt->execute([$MOVIE_ID]);
-$allReviews = $allReviewsStmt->fetchAll(PDO::FETCH_ASSOC);
-
-$totalReviews = count($allReviews);
-$avgRating = $totalReviews > 0 ? array_sum(array_column($allReviews, 'rating')) / $totalReviews : 0;
-$formattedAvgRating = $avgRating > 0 ? number_format($avgRating, 1) : '0.0';
-
-if (isset($_GET['fetch_data']) && $_GET['fetch_data'] == 1) {
-    header('Content-Type: application/json; charset=utf-8');
-    $response = [
-        'averageRating' => $formattedAvgRating,
-        'totalReviews' => $totalReviews,
-        'myReviewsHtml' => generate_reviews_html($allReviews, $CURRENT_USER_NAME),
-    ];
-    echo json_encode($response);
+// Film Coming Soon belum bisa direview
+if (($movie['status'] ?? 'released') === 'coming_soon') {
+    header('Location: ' . $homeUrl);
     exit;
 }
+
+// ---------- Cek fitur opsional di database ----------
+$hasHelpful      = cs_columnExists($pdo, 'review_helpful', 'review_id') && cs_columnExists($pdo, 'review_helpful', 'user_id');
+
+
+// ---------- Ambil SEMUA review film ini (satu user boleh punya banyak review) ----------
+$likeSelect = $hasHelpful
+    ? ", (SELECT COUNT(*) FROM review_helpful rh WHERE rh.review_id = r.id) AS like_count,
+         (SELECT COUNT(*) FROM review_helpful rh2 WHERE rh2.review_id = r.id AND rh2.user_id = :uid2) AS liked_by_me"
+    : ", 0 AS like_count, 0 AS liked_by_me";
+// Nama pengguna: nama lengkap jika ada, sama seperti di halaman ulasan
+$nameCol = cs_columnExists($pdo, 'users', 'full_name') ? 'COALESCE(NULLIF(u.full_name, \'\'), u.username)' : 'u.username';
+$sql = "SELECT r.*, $nameCol AS account_name $likeSelect
+        FROM reviews r
+        LEFT JOIN users u ON u.id = r.user_id
+        WHERE r.movie_id = :mid
+        ORDER BY r.id DESC";
+$stmt = $pdo->prepare($sql);
+$params = array(':mid' => $movieId);
+if ($hasHelpful) $params[':uid2'] = $userId;
+$stmt->execute($params);
+$reviews = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+$reviewCount = count($reviews);
+$sumRating = 0;
+$dist = array(5 => 0, 4 => 0, 3 => 0, 2 => 0, 1 => 0);
+foreach ($reviews as $rv) {
+    $sumRating += (int)$rv['rating'];
+    $k = max(1, min(5, (int)$rv['rating']));
+    $dist[$k]++;
+}
+$avgRating = $reviewCount ? $sumRating / $reviewCount : 0;
+
+$posterPath = cs_getPosterPath($movie['poster'] ?? '');
+$genres = array_filter(array_map('trim', explode(',', $movie['genre'] ?? '')));
+
+// Trailer
+$trailer = trim($movie['trailer_url'] ?? '');
+$ytId = cs_youtubeId($trailer);
+$localVideo = (!$ytId && $trailer !== '' && !preg_match('~^https?://~i', $trailer) && file_exists(__DIR__ . '/' . $trailer)) ? $trailer : null;
+
+
 ?>
 <!DOCTYPE html>
 <html lang="id">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=1200, initial-scale=0.35, user-scalable=yes">
-    <title>Beri Review Film <?= htmlspecialchars($title); ?> - CineScope</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title><?php echo cs_e($movie['title']); ?> - CineScope</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Inter', sans-serif; line-height: 1.6; background-color: #0a0a0a; color: #fff; }
+a { color: inherit; }
+.container { max-width: 1100px; margin: 0 auto; padding: 0 20px; }
 
-    <style>
-        :root {
-            --primary-color: #e50914;
-            --background-dark: #0a0a0a;
-            --card-dark: #1a1a1a;
-            --text-light: #ffffff;
-            --star-gold: #ffc107;
-            --input-bg: #2d2d2d;
-        }
+.navbar { background-color: #111; padding: 1rem 0; position: sticky; top: 0; z-index: 1000; border-bottom: 1px solid #333; }
+.nav-container { max-width: 1100px; margin: 0 auto; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.nav-brand { color: #e50914; font-size: 1.6rem; font-weight: 700; text-decoration: none; }
+.back-link { background: #e50914; color: #fff; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9rem; display: inline-flex; align-items: center; gap: 6px; }
+.back-link:hover { background: #b8070f; }
 
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Inter', sans-serif; background-color: var(--background-dark); color: var(--text-light); line-height: 1.6; padding: 20px; }
-        .container { max-width: 900px; margin: 0 auto; padding: 20px; background-color: var(--card-dark); border-radius: 12px; box-shadow: 0 0 20px rgba(0, 0, 0, 0.5); }
-        
-        .back-to-home {
-            display: inline-block;
-            background-color: #333;
-            color: var(--text-light);
-            padding: 8px 15px;
-            border-radius: 5px;
-            text-decoration: none;
-            margin-bottom: 20px;
-            transition: background-color 0.3s;
-            cursor: pointer;
-            border: none;
-            font-weight: 600;
-        }
-        .back-to-home:hover { background-color: #555; }
+/* Hero film */
+.movie-hero { padding: 2.5rem 0; background: linear-gradient(180deg, #1a0a0c 0%, #0a0a0a 100%); border-bottom: 1px solid #222; }
+.movie-hero .container { display: grid; grid-template-columns: 280px 1fr; gap: 2.5rem; align-items: start; }
+.poster-box { position: relative; padding-top: 150%; border-radius: 12px; overflow: hidden; background: #1a1a1a; box-shadow: 0 10px 30px rgba(229, 9, 20, 0.25); }
+.poster-box img, .poster-box .no-poster { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.no-poster { display: flex; align-items: center; justify-content: center; font-size: 4rem; background: #0277bd; }
+.movie-details h1 { font-size: 2.3rem; line-height: 1.2; margin-bottom: 0.3rem; }
+.original-title { color: #999; font-style: italic; margin-bottom: 0.8rem; }
+.meta { display: flex; flex-wrap: wrap; gap: 0.6rem 1.2rem; color: #bbb; font-size: 0.95rem; margin-bottom: 1rem; }
+.meta i { color: #e50914; margin-right: 5px; }
+.genres { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 1.2rem; }
+.genre-chip { background: rgba(229, 9, 20, 0.15); color: #ff6b73; border: 1px solid rgba(229, 9, 20, 0.4); padding: 3px 12px; border-radius: 20px; font-size: 0.82rem; font-weight: 600; }
+.score-box { display: inline-flex; align-items: center; gap: 14px; background: #161616; border: 1px solid #2a2a2a; border-radius: 12px; padding: 12px 20px; margin-bottom: 1.2rem; }
+.score-number { font-size: 2.4rem; font-weight: 700; color: #ffc107; line-height: 1; }
+.score-box .stars { color: #ffc107; font-size: 1.05rem; }
+.score-box small { color: #888; display: block; font-size: 0.82rem; }
+.synopsis h3 { font-size: 1.1rem; margin-bottom: 0.4rem; color: #fff; }
+.synopsis p { color: #ccc; white-space: pre-line; }
 
-        .movie-header { display: flex; gap: 20px; margin-bottom: 30px; align-items: flex-start; }
-        .movie-poster { width: 150px; height: 225px; object-fit: cover; border-radius: 8px; }
-        .movie-info h1 { color: var(--primary-color); margin-bottom: 5px; font-size: 2em; }
-        .movie-info p { color: #ccc; margin-bottom: 10px; }
+/* Section */
+.section { padding: 2.5rem 0; }
+.section h2 { font-size: 1.5rem; margin-bottom: 1.2rem; }
+.section h2 i { color: #e50914; margin-right: 8px; }
+.trailer-wrap { position: relative; padding-top: 56.25%; border-radius: 12px; overflow: hidden; background: #000; }
+.trailer-wrap iframe, .trailer-wrap video { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.trailer-link { display: inline-block; background: #e50914; color: #fff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: 600; }
 
-        .rating-summary { display: flex; align-items: center; gap: 15px; margin-top: 15px; padding: 10px 0; border-top: 1px solid #333; }
-        .rating-box { background-color: #333; padding: 8px 15px; border-radius: 5px; text-align: center; }
-        .rating-box .score { font-size: 1.8em; font-weight: 700; color: var(--star-gold); line-height: 1; }
-        .rating-box .count { font-size: 0.8em; color: #aaa; margin-top: 2px; }
+/* Ringkasan rating */
+.summary { display: grid; grid-template-columns: 200px 1fr; gap: 2rem; background: #141414; border: 1px solid #262626; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; align-items: center; }
+.summary-score { text-align: center; }
+.summary-score .big { font-size: 3.2rem; font-weight: 700; color: #ffc107; line-height: 1; }
+.summary-score .stars { color: #ffc107; margin: 6px 0; }
+.summary-score small { color: #888; }
+.bar-row { display: flex; align-items: center; gap: 10px; margin: 5px 0; font-size: 0.85rem; color: #aaa; }
+.bar-row .label { width: 38px; white-space: nowrap; }
+.bar-row .label i { color: #ffc107; font-size: 0.75rem; }
+.bar { flex: 1; height: 8px; background: #2a2a2a; border-radius: 4px; overflow: hidden; }
+.bar span { display: block; height: 100%; background: #e50914; border-radius: 4px; }
+.bar-row .count { width: 28px; text-align: right; }
 
-        .review-form-section { margin-bottom: 40px; padding: 20px; border: 1px solid #333; border-radius: 8px; }
-        .review-form-section h2 { font-size: 1.8em; color: var(--primary-color); margin-bottom: 20px; }
-        
-        .form-group { margin-bottom: 20px; }
-        .form-group label { display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-light); }
-        
-        textarea {
-            width: 100%; min-height: 120px; padding: 10px; border-radius: 4px; border: 1px solid #444;
-            background-color: var(--input-bg); color: var(--text-light); resize: vertical;
-        }
+/* Alert */
+.alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 1.2rem; font-weight: 500; }
+.alert.success { background: #0b3a1d; color: #2ecc71; border: 1px solid #2ecc71; }
+.alert.error { background: #3b0000; color: #ff6b6b; border: 1px solid #e74c3c; }
 
-        .submit-btn {
-            background-color: var(--primary-color); color: var(--text-light); padding: 10px 25px;
-            border: none; border-radius: 5px; font-weight: 600; cursor: pointer; transition: background-color 0.3s;
-        }
-        .submit-btn:hover { background-color: #f00; }
+/* Form review */
+.review-form, .login-box { background: #141414; border: 1px solid #262626; border-radius: 12px; padding: 1.5rem; margin-bottom: 2rem; }
+.review-form h3, .login-box h3 { margin-bottom: 1rem; font-size: 1.15rem; }
+.star-input { display: inline-flex; flex-direction: row-reverse; gap: 6px; }
+.star-input input { display: none; }
+.star-input label { cursor: pointer; color: #444; font-size: 2.1rem; transition: color 0.15s, transform 0.15s; line-height: 1; }
+.star-input input:checked ~ label,
+.star-input label:hover,
+.star-input label:hover ~ label { color: #ffc107; }
+.star-input label:hover { transform: scale(1.15); }
+.rating-hint { display: inline-block; margin-left: 14px; color: #ffc107; font-weight: 600; min-height: 1.5em; }
+textarea { width: 100%; min-height: 130px; padding: 14px; margin-top: 14px; background: #1c1c1c; border: 1px solid #333; border-radius: 8px; color: #fff; font-family: inherit; font-size: 1rem; resize: vertical; outline: none; }
+textarea:focus { border-color: #e50914; }
+.form-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.char-count { color: #777; font-size: 0.85rem; }
+.btn { background: #e50914; color: #fff; border: none; padding: 12px 26px; border-radius: 6px; font-size: 1rem; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; font-family: inherit; }
+.btn:hover { background: #b8070f; }
+.btn-outline { background: transparent; border: 2px solid #e50914; color: #e50914; }
+.btn-outline:hover { background: #e50914; color: #fff; }
+.login-box { text-align: center; }
+.login-box p { color: #aaa; margin-bottom: 1rem; }
+.login-box .btn { margin: 4px; }
 
-        .like-btn { background-color: #3498db; transition: background-color 0.3s; border: none; padding: 10px 15px; }
-        .like-btn:hover { background-color: #2980b9; }
-        .liked { background-color: var(--primary-color); }
-        .liked:hover { background-color: #c0392b; }
-        
-        .review-link { background-color: #2ecc71; }
-        .review-link:hover { background-color: #27ae60; }
-        
-        .trailer-btn { background-color: #9b59b6; }
-        .trailer-btn:hover { background-color: #8e44ad; }
+/* Daftar review */
+.review-card { background: #141414; border: 1px solid #262626; border-radius: 12px; padding: 1.2rem 1.4rem; margin-bottom: 1rem; }
+.review-card.mine { border-color: #e50914; }
+.review-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.avatar { width: 44px; height: 44px; border-radius: 50%; background: linear-gradient(135deg, #e50914, #8a0610); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.1rem; flex-shrink: 0; }
+.review-user { font-weight: 600; }
+.review-user .badge { background: #e50914; font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; margin-left: 6px; }
+.review-date { color: #777; font-size: 0.82rem; }
+.review-stars { color: #ffc107; margin-left: auto; white-space: nowrap; }
+.review-text { color: #ddd; white-space: pre-line; word-break: break-word; margin: 6px 0 12px; }
+.review-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.like-btn, .del-btn { background: #1f1f1f; color: #bbb; border: 1px solid #333; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-size: 0.85rem; font-family: inherit; }
+.like-btn:hover { border-color: #ff4d6d; color: #ff4d6d; }
+.like-btn.liked { background: rgba(255, 77, 109, 0.15); border-color: #ff4d6d; color: #ff4d6d; }
+.like-btn[disabled] { cursor: default; opacity: 0.8; }
+.del-btn:hover { border-color: #e74c3c; color: #e74c3c; }
+.empty { text-align: center; color: #666; padding: 40px 20px; }
+.empty i { font-size: 3rem; color: #333; margin-bottom: 10px; }
 
-        .star-rating { display: flex; flex-direction: row-reverse; justify-content: flex-end; }
-        .star-rating input { display: none; }
-        .star-rating label { font-size: 2.5em; color: #444; cursor: pointer; padding: 0 5px; transition: color 0.2s; }
-        .star-rating label:hover,
-        .star-rating label:hover ~ label,
-        .star-rating input:checked ~ label { color: var(--star-gold); }
-        
-        .my-reviews-section { margin-bottom: 40px; }
-        .my-reviews-section h2 { font-size: 1.8em; color: var(--text-light); margin-bottom: 25px; border-bottom: 2px solid var(--star-gold); padding-bottom: 5px; }
+.footer { border-top: 1px solid #222; text-align: center; color: #777; padding: 2rem 0; margin-top: 2rem; font-size: 0.9rem; }
 
-        .review-item {
-            background-color: #333; padding: 15px 20px; border-radius: 6px; margin-bottom: 15px;
-            border-left: 5px solid var(--primary-color); 
-        }
-        .rating-display { margin-bottom: 10px; }
-        .review-item p { margin-bottom: 10px; font-size: 1em; color: #e0e0e0; }
-        .reviewer-info { font-size: 0.85em; color: #aaa; text-align: right; border-top: 1px dashed #555; padding-top: 5px; }
-    </style>
+@media (max-width: 768px) {
+    .movie-hero .container { grid-template-columns: 1fr; }
+    .poster-box { max-width: 240px; margin: 0 auto; }
+    .movie-details h1 { font-size: 1.7rem; }
+    .summary { grid-template-columns: 1fr; gap: 1rem; }
+    .review-stars { margin-left: 0; width: 100%; }
+    .star-input label { font-size: 2.4rem; }
+}
+</style>
 </head>
 <body>
-    <div class="container">
-        
-        <button class="back-to-home" onclick="window.history.back()">
-            <i class="fas fa-arrow-left"></i> Kembali
-        </button>
-        <section class="movie-header">
-            <img src="<?= htmlspecialchars($posterPath); ?>" alt="Poster Film <?= htmlspecialchars($title); ?>" class="movie-poster">
-            <div class="movie-info">
-                <h1><?= htmlspecialchars($title); ?></h1>
-                <p><?= htmlspecialchars($releaseYear); ?> • <?= htmlspecialchars($genre); ?> • 2h 0m</p>
-                <p>Sutradara: <?= htmlspecialchars($director); ?> • Pemain: <?= htmlspecialchars($cast); ?></p>
-                
-                <div style="display: flex; gap: 10px; align-items: center; margin-top: 10px;">
-                    <button id="likeButton" class="submit-btn like-btn" data-movie-id="SORE_AADC_3">
-                        <i class="fas fa-thumbs-up"></i> <span id="likeText">Suka</span>
-                    </button>
-                    <a href="daftar tonton.php" class="submit-btn" style="text-decoration: none; display: inline-block; background-color: #333;"><i class="fas fa-bookmark"></i> Daftar Tonton</a>
-                    
-                    <a href="ulasan_sore.php" class="submit-btn review-link" style="text-decoration: none; display: inline-block;">
-                        <i class="fas fa-eye"></i> Lihat Semua Ulasan
-                    </a>
-                </div>
-                
-                <div class="rating-summary" style="margin-top: 25px;">
-                    <div class="rating-box">
-                        <div class="score" id="averageRating"><?php echo $formattedAvgRating; ?>/5</div>
-                        <div class="count">Rata-Rata</div>
-                    </div>
-                    <div class="rating-box">
-                        <div class="score" id="reviewCount"><?php echo $totalReviews; ?></div>
-                        <div class="count">Total Ulasan</div>
-                    </div>
-                    <button id="trailerButton" class="submit-btn trailer-btn" style="padding: 15px 20px;">
-                        <i class="fas fa-play-circle"></i> Tonton Trailer
-                    </button>
-                </div>
-            </div>
-        </section>
 
-        <?php if ($IS_LOGGED_IN): ?>
-        <section class="review-form-section">
-            <h2><i class="fas fa-edit"></i> Berikan Ulasan dan Rating Anda</h2>
-            <form id="reviewForm">
-                
-                <div class="form-group">
-                    <label>Rating Anda (1-5 Bintang)</label>
-                    <div class="star-rating" id="ratingInput">
-                        <input type="radio" id="star5" name="rating" value="5" required><label for="star5" title="Sangat Suka"><i class="fas fa-star"></i></label>
-                        <input type="radio" id="star4" name="rating" value="4"><label for="star4" title="Bagus"><i class="fas fa-star"></i></label>
-                        <input type="radio" id="star3" name="rating" value="3"><label for="star3" title="Lumayan"><i class="fas fa-star"></i></label>
-                        <input type="radio" id="star2" name="rating" value="2"><label for="star2" title="Kurang"><i class="fas fa-star"></i></label>
-                        <input type="radio" id="star1" name="rating" value="1"><label for="star1" title="Buruk"><i class="fas fa-star"></i></label>
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label for="reviewText">Ulasan Anda:</label>
-                    <textarea id="reviewText" placeholder="Tuliskan ulasan Anda tentang film ini di sini..."></textarea>
-                </div>
-                
-                <button type="submit" class="submit-btn"><i class="fas fa-paper-plane"></i> Kirim Ulasan</button>
-            </form>
-        </section>
-        <?php else: ?>
-        <section class="review-form-section" style="text-align:center;">
-            <h2><i class="fas fa-lock"></i> Ingin Memberi Rating &amp; Ulasan?</h2>
-            <p style="color:#ccc;margin-bottom:18px;">Pengunjung hanya dapat melihat rating dan ulasan. Silakan login atau daftar untuk memberikan rating dan ulasan Anda.</p>
-            <a href="login.php" class="submit-btn" style="text-decoration:none;display:inline-block;"><i class="fas fa-sign-in-alt"></i> Masuk</a>
-            <a href="bergabung_sekarang.php" class="submit-btn" style="text-decoration:none;display:inline-block;background-color:#333;margin-left:8px;"><i class="fas fa-user-plus"></i> Daftar</a>
-        </section>
-        <?php endif; ?>
-        
-        <section class="my-reviews-section">
-            <h2><i class="fas fa-comments"></i> Semua Ulasan</h2>
-            <div id="my-reviews-display">
-                <?php echo generate_reviews_html($allReviews, $CURRENT_USER_NAME); ?>
-            </div>
-        </section>
-        
+<nav class="navbar">
+    <div class="nav-container">
+        <a href="<?php echo cs_e($homeUrl); ?>" class="nav-brand">CineScope</a>
+        <a href="<?php echo cs_e($homeUrl); ?>" class="back-link"><i class="fas fa-arrow-left"></i> Kembali</a>
     </div>
+</nav>
 
-    <script>
-        const STORAGE_KEY = 'soreReviews';
-        const CURRENT_USER_NAME = '<?php echo addslashes($CURRENT_USER_NAME); ?>'; 
-        const WATCHLIST_KEY = 'cineScopeWatchlist';
-        const CURRENT_USER_EMAIL = localStorage.getItem('cineScopeCurrentUser') || 'guest@cinescope.com'; 
+<header class="movie-hero">
+    <div class="container">
+        <div class="poster-box">
+            <?php if ($posterPath): ?>
+                <img src="<?php echo cs_e($posterPath); ?>" alt="<?php echo cs_e($movie['title']); ?>">
+            <?php else: ?>
+                <div class="no-poster">🎬</div>
+            <?php endif; ?>
+        </div>
 
-        const MOVIE_DATA = {
-            id: 'SORE_AADC_3',
-            title: '<?= addslashes($title); ?>',
-            poster: '<?= addslashes($posterPath); ?>',
-            genre: '<?= addslashes($genre); ?>'
-        };
+        <div class="movie-details">
+            <h1><?php echo cs_e($movie['title']); ?></h1>
+            <?php if (!empty($movie['original_title'])): ?>
+                <div class="original-title"><?php echo cs_e($movie['original_title']); ?></div>
+            <?php endif; ?>
 
-        const reviewForm = document.getElementById('reviewForm');
-        const myReviewsDisplay = document.getElementById('my-reviews-display');
-        const reviewCountSpan = document.getElementById('reviewCount');
-        const averageRatingSpan = document.getElementById('averageRating');
-        const likeButton = document.getElementById('likeButton');
-        const likeText = document.getElementById('likeText');
-        const trailerButton = document.getElementById('trailerButton');
+            <div class="meta">
+                <?php if (!empty($movie['release_year'])): ?><span><i class="fas fa-calendar"></i><?php echo cs_e($movie['release_year']); ?></span><?php endif; ?>
+                <?php if (!empty($movie['duration'])): ?><span><i class="fas fa-clock"></i><?php echo (int)$movie['duration']; ?> menit</span><?php endif; ?>
+                <?php if (!empty($movie['director'])): ?><span><i class="fas fa-video"></i><?php echo cs_e($movie['director']); ?></span><?php endif; ?>
+            </div>
 
-        // URL Trailer - Ganti dengan link trailer YouTube yang sesuai
-        const TRAILER_URL = 'uploads/videos/TRAILER - FILM SORE KARYA YANDY LAURENS _ TAYANG 10 JULI 2025 DI BIOSKOP.mp4';
+            <?php if ($genres): ?>
+            <div class="genres">
+                <?php foreach ($genres as $g): ?><span class="genre-chip"><?php echo cs_e($g); ?></span><?php endforeach; ?>
+            </div>
+            <?php endif; ?>
 
-        function getWatchlist() {
-            const watchlistData = JSON.parse(localStorage.getItem(WATCHLIST_KEY)) || {};
-            return watchlistData[CURRENT_USER_EMAIL] || [];
-        }
+            <div class="score-box">
+                <div class="score-number"><?php echo number_format($avgRating, 1); ?></div>
+                <div>
+                    <div class="stars"><?php echo cs_starsHtml($avgRating); ?></div>
+                    <small><?php echo $reviewCount; ?> review</small>
+                </div>
+            </div>
 
-        function saveWatchlist(watchlist) {
-            const watchlistData = JSON.parse(localStorage.getItem(WATCHLIST_KEY)) || {};
-            watchlistData[CURRENT_USER_EMAIL] = watchlist;
-            localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlistData));
-        }
+            <?php if (!empty($movie['synopsis'])): ?>
+            <div class="synopsis">
+                <h3>Sinopsis</h3>
+                <p><?php echo cs_e($movie['synopsis']); ?></p>
+            </div>
+            <?php endif; ?>
+        </div>
+    </div>
+</header>
 
-        function updateLikeButtonState(watchlist) {
-            const isLiked = watchlist.some(movie => movie.id === MOVIE_DATA.id);
-            
-            if (isLiked) {
-                likeButton.classList.add('liked');
-                likeText.textContent = 'Disukai';
-                likeButton.querySelector('i').className = 'fas fa-heart'; 
-            } else {
-                likeButton.classList.remove('liked');
-                likeText.textContent = 'Suka';
-                likeButton.querySelector('i').className = 'fas fa-thumbs-up'; 
-            }
-        }
+<?php if ($ytId || $localVideo || ($trailer !== '' && preg_match('~^https?://~i', $trailer))): ?>
+<section class="section">
+    <div class="container">
+        <h2><i class="fas fa-play-circle"></i> Trailer</h2>
+        <?php if ($ytId): ?>
+            <div class="trailer-wrap">
+                <iframe src="https://www.youtube.com/embed/<?php echo cs_e($ytId); ?>" allowfullscreen loading="lazy"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"></iframe>
+            </div>
+        <?php elseif ($localVideo): ?>
+            <div class="trailer-wrap"><video src="<?php echo cs_e($localVideo); ?>" controls preload="metadata"></video></div>
+        <?php else: ?>
+            <a class="trailer-link" href="<?php echo cs_e($trailer); ?>" target="_blank" rel="noopener"><i class="fas fa-external-link-alt"></i> Tonton Trailer</a>
+        <?php endif; ?>
+    </div>
+</section>
+<?php endif; ?>
 
-        likeButton.addEventListener('click', function() {
-            let watchlist = getWatchlist();
-            const isLiked = watchlist.some(movie => movie.id === MOVIE_DATA.id);
+<section class="section" id="reviews" style="padding-top:1rem;">
+    <div class="container">
+        <h2><i class="fas fa-star"></i> Rating & Review</h2>
 
-            if (isLiked) {
-                watchlist = watchlist.filter(movie => movie.id !== MOVIE_DATA.id);
-                alert(`Film "${MOVIE_DATA.title}" dihapus dari Daftar Tonton.`);
-            } else {
-                watchlist.push(MOVIE_DATA);
-                alert(`Film "${MOVIE_DATA.title}" ditambahkan ke Daftar Tonton!`);
-            }
+        <?php if ($reviewCount > 0): ?>
+        <div class="summary">
+            <div class="summary-score">
+                <div class="big"><?php echo number_format($avgRating, 1); ?></div>
+                <div class="stars"><?php echo cs_starsHtml($avgRating); ?></div>
+                <small>dari <?php echo $reviewCount; ?> review</small>
+            </div>
+            <div>
+                <?php for ($s = 5; $s >= 1; $s--): $pct = $reviewCount ? round($dist[$s] / $reviewCount * 100) : 0; ?>
+                <div class="bar-row">
+                    <span class="label"><?php echo $s; ?> <i class="fas fa-star"></i></span>
+                    <div class="bar"><span style="width:<?php echo $pct; ?>%"></span></div>
+                    <span class="count"><?php echo $dist[$s]; ?></span>
+                </div>
+                <?php endfor; ?>
+            </div>
+        </div>
+        <?php endif; ?>
 
-            saveWatchlist(watchlist);
-            updateLikeButtonState(watchlist);
-        });
+        
+        <div class="login-box">
+            <h3><i class="fas fa-lock"></i> Login untuk memberi rating & review</h3>
+            <p>Masuk atau daftar dulu supaya Anda bisa menulis review untuk film ini.</p>
+            <a href="login.php" class="btn"><i class="fas fa-sign-in-alt"></i> Login</a>
+            <a href="bergabung_sekarang.php" class="btn btn-outline"><i class="fas fa-user-plus"></i> Daftar</a>
+        </div>
 
-        // Event listener untuk tombol trailer
-        trailerButton.addEventListener('click', function() {
-            window.open(TRAILER_URL, '_blank');
-        });
+        <?php if ($reviewCount === 0): ?>
+            <div class="empty">
+                <i class="far fa-comment-dots"></i>
+                <p>Belum ada review untuk film ini. Jadilah yang pertama!</p>
+            </div>
+        <?php endif; ?>
 
-        function loadReviewsAndStats() {
-            fetch(window.location.pathname + '?fetch_data=1')
-            .then(response => response.json())
-            .then(data => {
-                averageRatingSpan.textContent = data.averageRating + '/5';
-                reviewCountSpan.textContent = data.totalReviews;
-                document.getElementById('my-reviews-display').innerHTML = data.myReviewsHtml;
-            })
-            .catch(err => {
-                console.error('Gagal memuat data:', err);
-            });
-        }
+        <?php foreach ($reviews as $rv):
+            $name = $rv['account_name'] ?: (($rv['user_name'] ?? '') ?: 'Pengguna');
+            $isMine = false;
+            $date = $rv['created_at'] ?? '';
+        ?>
+        <div class="review-card <?php echo $isMine ? 'mine' : ''; ?>" id="review-<?php echo (int)$rv['id']; ?>">
+            <div class="review-head">
+                <div class="avatar"><?php echo cs_e(mb_strtoupper(mb_substr($name, 0, 1))); ?></div>
+                <div>
+                    <div class="review-user"><?php echo cs_e($name); ?><?php if ($isMine): ?><span class="badge">Review Anda</span><?php endif; ?></div>
+                    <?php if ($date): ?><div class="review-date"><?php echo cs_e(cs_formatTanggalID($date)); ?></div><?php endif; ?>
+                </div>
+                <div class="review-stars"><?php echo cs_starsHtml($rv['rating']); ?> <strong><?php echo (int)$rv['rating']; ?>/5</strong></div>
+            </div>
+            <div class="review-text"><?php echo cs_e($rv['review_text']); ?></div>
 
-        if (reviewForm) reviewForm.addEventListener('submit', function(e) {
-            e.preventDefault();
+            <?php if ($hasHelpful): ?>
+            <div class="review-actions">
+                <span class="like-btn" style="cursor:default;"><i class="far fa-heart"></i> <?php echo (int)$rv['like_count']; ?></span>
+            </div>
+            <?php endif; ?>
+        </div>
+        <?php endforeach; ?>
+    </div>
+</section>
 
-            const selectedRating = document.querySelector('input[name="rating"]:checked');
-            const reviewText = document.getElementById('reviewText').value.trim();
-
-            if (!selectedRating) {
-                alert("Harap berikan rating (bintang) sebelum mengirim ulasan!");
-                return;
-            }
-
-            const formData = new URLSearchParams();
-            formData.append('is_ajax', 1);
-            formData.append('rating', selectedRating.value);
-            formData.append('reviewText', reviewText);
-
-            const submitBtn = this.querySelector('button[type="submit"]');
-            const originalHtml = submitBtn.innerHTML;
-            submitBtn.disabled = true;
-            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Mengirim...';
-
-            fetch(window.location.pathname, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
-                body: formData.toString()
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.success) {
-                    alert('✅ Review berhasil ditambahkan!');
-                    document.getElementById('reviewText').value = '';
-                    document.querySelectorAll('input[name="rating"]').forEach(i => i.checked = false);
-                    loadReviewsAndStats();
-                } else {
-                    if (data.login_required) { alert('🔒 ' + data.message); window.location.href = 'login.php'; return; }
-                    alert('❌ Gagal menyimpan ulasan: ' + data.message);
-                }
-                submitBtn.disabled = false;
-                submitBtn.innerHTML = originalHtml;
-            })
-            .catch(err => {
-                console.error('Error submitting review:', err);
-                alert('❌ Terjadi kesalahan jaringan saat mengirim ulasan.');
-                submitBtn.disabled = false;
-                submitBtn.innerHTML = originalHtml;
-            });
-        });
-
-        document.addEventListener('DOMContentLoaded', function() {
-            loadReviewsAndStats();
-            const initialWatchlist = getWatchlist();
-            updateLikeButtonState(initialWatchlist);
-        });
-    </script>
+<footer class="footer">&copy; 2024 CineScope. All rights reserved.</footer>
 
 </body>
 </html>

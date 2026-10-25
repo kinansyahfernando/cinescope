@@ -1,11 +1,27 @@
 <?php
-// File: daftar tonton.php (FIXED)
+// File: daftar_tonton.php
+// Daftar Tonton milik user (disimpan di database, tabel `watchlist`):
+// - Film masuk otomatis ketika user menekan tombol "Daftar Tonton" di halaman ulasan film (ulasan_*.php)
+// - Tombol "Hapus dari Daftar" mengeluarkan film dari daftar ini
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
 
+// Hanya user yang sudah login yang punya Daftar Tonton
+if (empty($_SESSION['user_id'])) {
+    header('Location: login.php?error=' . urlencode('Silakan login dulu untuk melihat Daftar Tonton'));
+    exit;
+}
+// Catat nama file halaman ini supaya tombol "Kembali" di halaman ulasan selalu mengarah ke sini (apa pun nama filenya)
+$_SESSION['watchlist_page'] = basename($_SERVER['SCRIPT_NAME']);
+
+$USER_ID           = (int)$_SESSION['user_id'];
 $CURRENT_USER_NAME = $_SESSION['username'] ?? 'Guest';
-$USER_ID = $_SESSION['user_id'] ?? null;
+
+if (empty($_SESSION['csrf'])) {
+    $_SESSION['csrf'] = bin2hex(random_bytes(16));
+}
+$csrf = $_SESSION['csrf'];
 
 // Database Configuration
 $host = '127.0.0.1';
@@ -20,15 +36,95 @@ try {
     die("❌ Error Koneksi Database: " . $e->getMessage());
 }
 
-// 🔥 Ambil semua data film dari database untuk mapping poster
-$moviesStmt = $pdo->query("SELECT id, title, poster, genre FROM movies");
-$allMovies = $moviesStmt->fetchAll(PDO::FETCH_ASSOC);
+// ---------- Helper ----------
+function cs_e($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 
-// Buat mapping untuk mudah akses data film
-$movieMap = [];
-foreach ($allMovies as $movie) {
-    $movieMap[$movie['id']] = $movie;
+function cs_columnExists(PDO $pdo, $table, $column) {
+    try {
+        $st = $pdo->prepare("SHOW COLUMNS FROM `$table` LIKE ?");
+        $st->execute([$column]);
+        return (bool)$st->fetch();
+    } catch (PDOException $e) {
+        return false;
+    }
 }
+
+// Cari tabel daftar tonton yang sudah ada; jika belum ada, buat tabel `watchlist` otomatis
+// (logika yang sama dengan halaman ulasan_*.php supaya keduanya memakai tabel yang sama)
+function cs_watchlistTable(PDO $pdo) {
+    foreach (array('watchlist', 'daftar_tonton', 'watchlists') as $tbl) {
+        if (cs_columnExists($pdo, $tbl, 'user_id') && cs_columnExists($pdo, $tbl, 'movie_id')) return $tbl;
+    }
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS `watchlist` (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            movie_id INT NOT NULL,
+            created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_watch_user_movie (user_id, movie_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        return 'watchlist';
+    } catch (PDOException $e) {
+        return null;
+    }
+}
+
+// Halaman ulasan tiap film (ID film di tabel movies => file ulasan)
+function cs_reviewPage($movieId) {
+    $map = array(
+        1 => 'ulasan_sore.php',
+        2 => 'ulasan_petaka_gunung_gede.php',
+        3 => 'ulasan_dilan1990.php',
+        4 => 'ulasan_rest_area.php',
+        5 => 'ulasan_tukartakdir.php',
+        6 => 'ulasan_rangga%26cinta.php',
+    );
+    // Film baru dari admin dibuka lewat ulasan_sore.php?id=ID_FILM
+    $url = $map[(int)$movieId] ?? ('ulasan_sore.php?id=' . (int)$movieId);
+    // from=watchlist: supaya tombol "Kembali" di halaman ulasan kembali ke Daftar Tonton ini
+    return $url . (strpos($url, '?') === false ? '?' : '&') . 'from=watchlist';
+}
+
+$wlTable = cs_watchlistTable($pdo);
+$pageUrl = rawurlencode(basename($_SERVER['SCRIPT_NAME']));   // nama file ini sendiri (otomatis)
+
+// ---------- Hapus film dari daftar (POST) ----------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'remove') {
+    if (!hash_equals($csrf, $_POST['csrf'] ?? '')) {
+        header('Location: ' . $pageUrl . '?msg=csrf');
+        exit;
+    }
+    try {
+        if ($wlTable) {
+            $movieId = (int)($_POST['movie_id'] ?? 0);
+            $pdo->prepare("DELETE FROM `$wlTable` WHERE user_id = ? AND movie_id = ?")->execute([$USER_ID, $movieId]);
+        }
+        header('Location: ' . $pageUrl . '?msg=removed');
+    } catch (PDOException $e) {
+        error_log('daftar_tonton.php: ' . $e->getMessage());
+        header('Location: ' . $pageUrl . '?msg=error');
+    }
+    exit;
+}
+
+// ---------- Ambil film di Daftar Tonton ----------
+$watchlist = array();
+if ($wlTable) {
+    $order = cs_columnExists($pdo, $wlTable, 'created_at') ? 'ORDER BY w.created_at DESC' : '';
+    $st = $pdo->prepare("SELECT m.id, m.title, m.poster, m.genre
+                         FROM `$wlTable` w
+                         INNER JOIN movies m ON m.id = w.movie_id
+                         WHERE w.user_id = ? $order");
+    $st->execute([$USER_ID]);
+    $watchlist = $st->fetchAll(PDO::FETCH_ASSOC);
+}
+
+$messages = array(
+    'removed' => array('success', 'Film berhasil dihapus!'),
+    'csrf'    => array('error',   'Sesi tidak valid, silakan coba lagi.'),
+    'error'   => array('error',   'Terjadi kesalahan, silakan coba lagi.'),
+);
+$flash = $messages[$_GET['msg'] ?? ''] ?? null;
 ?>
 <!DOCTYPE html>
 <html lang="id">
@@ -51,26 +147,26 @@ foreach ($allMovies as $movie) {
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        body { 
-            font-family: 'Inter', sans-serif; 
+
+        body {
+            font-family: 'Inter', sans-serif;
             background: var(--gradient-dark);
-            color: var(--text-light); 
-            line-height: 1.6; 
+            color: var(--text-light);
+            line-height: 1.6;
             padding: 20px;
             min-height: 100vh;
         }
-        
-        .container { 
-            max-width: 1400px; 
-            margin: 0 auto; 
-            padding: 30px; 
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 30px;
             background: rgba(26, 26, 26, 0.95);
-            border-radius: 20px; 
+            border-radius: 20px;
             box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
             backdrop-filter: blur(10px);
         }
-        
+
         .back-link {
             text-decoration: none;
             color: var(--text-light);
@@ -93,13 +189,9 @@ foreach ($allMovies as $movie) {
             box-shadow: 0 5px 15px rgba(229, 9, 20, 0.4);
         }
 
-        .back-link i {
-            font-size: 1.1em;
-        }
+        .back-link i { font-size: 1.1em; }
 
-        .header {
-            margin-bottom: 35px;
-        }
+        .header { margin-bottom: 35px; }
 
         .header h1 {
             color: var(--primary-color);
@@ -142,15 +234,13 @@ foreach ($allMovies as $movie) {
         .movie-card::before {
             content: '';
             position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
+            top: 0; left: 0; right: 0; bottom: 0;
             background: var(--gradient-primary);
             opacity: 0;
             transition: opacity 0.4s ease;
             z-index: 0;
             border-radius: 12px;
+            pointer-events: none;
         }
 
         .movie-card:hover {
@@ -159,15 +249,14 @@ foreach ($allMovies as $movie) {
             border-color: var(--primary-color);
         }
 
-        .movie-card:hover::before {
-            opacity: 0.1;
-        }
+        .movie-card:hover::before { opacity: 0.1; }
 
         .poster-container {
             position: relative;
             overflow: hidden;
             height: 330px;
             background: #000;
+            display: block;
         }
 
         .movie-poster {
@@ -177,24 +266,17 @@ foreach ($allMovies as $movie) {
             transition: transform 0.5s ease;
         }
 
-        .movie-card:hover .movie-poster {
-            transform: scale(1.1);
-        }
+        .movie-card:hover .movie-poster { transform: scale(1.1); }
 
         .poster-overlay {
             position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
+            top: 0; left: 0; right: 0; bottom: 0;
             background: linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.8) 100%);
             opacity: 0;
             transition: opacity 0.3s ease;
         }
 
-        .movie-card:hover .poster-overlay {
-            opacity: 1;
-        }
+        .movie-card:hover .poster-overlay { opacity: 1; }
 
         .favorite-badge {
             position: absolute;
@@ -209,7 +291,7 @@ foreach ($allMovies as $movie) {
             z-index: 2;
             box-shadow: 0 3px 10px rgba(229, 9, 20, 0.5);
         }
-        
+
         .movie-info {
             padding: 20px;
             position: relative;
@@ -229,6 +311,9 @@ foreach ($allMovies as $movie) {
             line-height: 1.4;
         }
 
+        .movie-info h3 a { color: inherit; text-decoration: none; }
+        .movie-info h3 a:hover { color: var(--star-gold); }
+
         .movie-genre {
             font-size: 0.85em;
             color: #aaa;
@@ -238,9 +323,7 @@ foreach ($allMovies as $movie) {
             gap: 6px;
         }
 
-        .movie-genre i {
-            color: var(--star-gold);
-        }
+        .movie-genre i { color: var(--star-gold); }
 
         .remove-btn {
             background: var(--gradient-primary);
@@ -250,6 +333,7 @@ foreach ($allMovies as $movie) {
             padding: 12px 0;
             cursor: pointer;
             font-weight: 600;
+            font-family: inherit;
             margin-top: 10px;
             transition: all 0.3s ease;
             border-radius: 8px;
@@ -266,10 +350,8 @@ foreach ($allMovies as $movie) {
             box-shadow: 0 5px 15px rgba(192, 57, 43, 0.4);
         }
 
-        .remove-btn:active {
-            transform: translateY(0);
-        }
-        
+        .remove-btn:active { transform: translateY(0); }
+
         .empty-message {
             text-align: center;
             padding: 80px 40px;
@@ -288,39 +370,33 @@ foreach ($allMovies as $movie) {
             display: inline-block;
         }
 
-        .empty-message h3 {
-            font-size: 1.8em;
-            color: var(--text-light);
-            margin-bottom: 15px;
-        }
+        .empty-message h3 { font-size: 1.8em; color: var(--text-light); margin-bottom: 15px; }
+        .empty-message p { font-size: 1.1em; line-height: 1.8; margin-bottom: 10px; }
 
-        .empty-message p {
-            font-size: 1.1em;
-            line-height: 1.8;
-            margin-bottom: 10px;
+        /* Notifikasi */
+        .toast {
+            position: fixed; top: 20px; right: 20px; color: white;
+            padding: 15px 25px; border-radius: 10px; z-index: 1000; font-weight: 600;
+            transition: opacity 0.5s ease;
         }
+        .toast.success { background: linear-gradient(135deg, #27ae60, #229954); box-shadow: 0 5px 20px rgba(39, 174, 96, 0.4); }
+        .toast.error   { background: linear-gradient(135deg, #e50914, #8b0000); box-shadow: 0 5px 20px rgba(229, 9, 20, 0.4); }
 
         @media (max-width: 768px) {
-            .container {
-                padding: 20px;
-            }
-
-            .header h1 {
-                font-size: 2em;
-            }
-
-            .watchlist-grid {
-                grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-                gap: 15px;
-            }
-
-            .poster-container {
-                height: 240px;
-            }
+            .container { padding: 20px; }
+            .header h1 { font-size: 2em; }
+            .watchlist-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 15px; }
+            .poster-container { height: 240px; }
         }
     </style>
 </head>
 <body>
+    <?php if ($flash): ?>
+        <div class="toast <?= $flash[0] ?>" id="toast">
+            <i class="fas <?= $flash[0] === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle' ?>"></i> <?= cs_e($flash[1]) ?>
+        </div>
+    <?php endif; ?>
+
     <div class="container">
         <a href="user.php" class="back-link">
             <i class="fas fa-arrow-left"></i> Kembali ke Beranda
@@ -330,167 +406,54 @@ foreach ($allMovies as $movie) {
             <h1><i class="fas fa-bookmark"></i> Daftar Tonton Saya</h1>
         </div>
 
-        <div id="watchlistContainer" class="watchlist-grid">
-            <!-- Content akan dimuat via JavaScript -->
-        </div>
+        <?php if (count($watchlist) === 0): ?>
+            <div class="empty-message">
+                <i class="fas fa-film"></i>
+                <h3>Daftar Tonton Kosong</h3>
+                <p>Anda belum menambahkan film apapun ke daftar tonton.</p>
+                <p style="margin-top: 20px;">
+                    <a href="user.php" style="color: var(--primary-color); text-decoration: none; font-weight: 600;">
+                        <i class="fas fa-arrow-left"></i> Kembali ke Beranda
+                    </a>
+                </p>
+            </div>
+        <?php else: ?>
+            <div id="watchlistContainer" class="watchlist-grid">
+                <?php foreach ($watchlist as $movie):
+                    $poster  = !empty($movie['poster']) ? $movie['poster'] : 'uploads/posters/default.jpg';
+                    $filmUrl = cs_reviewPage($movie['id']);
+                ?>
+                    <div class="movie-card">
+                        <a class="poster-container" href="<?= cs_e($filmUrl) ?>">
+                            <span class="favorite-badge"><i class="fas fa-heart"></i> Favorit</span>
+                            <img src="<?= cs_e($poster) ?>" alt="Poster <?= cs_e($movie['title']) ?>" class="movie-poster" onerror="this.onerror=null;this.src='uploads/posters/default.jpg';">
+                            <div class="poster-overlay"></div>
+                        </a>
+                        <div class="movie-info">
+                            <h3><a href="<?= cs_e($filmUrl) ?>"><?= cs_e($movie['title']) ?></a></h3>
+                            <p class="movie-genre"><i class="fas fa-tags"></i> <?= cs_e(!empty($movie['genre']) ? $movie['genre'] : 'Genre tidak tersedia') ?></p>
+                            <form method="post" action="<?= cs_e($pageUrl) ?>" onsubmit="return confirm('Apakah Anda yakin ingin menghapus film ini dari Daftar Tonton?');">
+                                <input type="hidden" name="action" value="remove">
+                                <input type="hidden" name="csrf" value="<?= cs_e($csrf) ?>">
+                                <input type="hidden" name="movie_id" value="<?= (int)$movie['id'] ?>">
+                                <button type="submit" class="remove-btn"><i class="fas fa-trash-alt"></i> Hapus dari Daftar</button>
+                            </form>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
     </div>
 
     <script>
-        const WATCHLIST_KEY = 'cineScopeWatchlist';
-        const CURRENT_USER_EMAIL = localStorage.getItem('cineScopeCurrentUser') || 'guest@cinescope.com';
-        const container = document.getElementById('watchlistContainer');
-
-        // 🔥 Movie Database Mapping dari PHP
-        const movieDatabase = <?php echo json_encode($movieMap); ?>;
-
-        // 🔥 Movie ID to Poster Mapping (hardcoded fallback)
-        const moviePosterMap = {
-            'SORE_AADC_3': 'uploads/posters/poster_sore.jpg',
-            'MOVIE_2': 'uploads/posters/poster_petaka.jpg',
-            'DILAN_1990': 'uploads/posters/poster_dilan.jpg',
-            'REST_AREA': 'uploads/posters/poster_restarea.jpg',
-            'TUKAR_TAKDIR': 'uploads/posters/poster_tukartakdir.jpg',
-            'RANGGA_CINTA': 'uploads/posters/poster_aadc.jpg'
-        };
-
-        function getWatchlist() {
-            const watchlistData = JSON.parse(localStorage.getItem(WATCHLIST_KEY)) || {};
-            return watchlistData[CURRENT_USER_EMAIL] || [];
+        // Sembunyikan notifikasi otomatis
+        var toast = document.getElementById('toast');
+        if (toast) {
+            setTimeout(function () {
+                toast.style.opacity = '0';
+                setTimeout(function () { toast.remove(); }, 500);
+            }, 2000);
         }
-
-        function saveWatchlist(watchlist) {
-            const watchlistData = JSON.parse(localStorage.getItem(WATCHLIST_KEY)) || {};
-            watchlistData[CURRENT_USER_EMAIL] = watchlist;
-            localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlistData));
-        }
-
-        function getPosterPath(movie) {
-            // Priority 1: Check if poster exists in movie object
-            if (movie.poster && movie.poster !== '' && movie.poster !== 'uploads/posters/default.jpg') {
-                return movie.poster;
-            }
-
-            // Priority 2: Check moviePosterMap using movie ID
-            if (moviePosterMap[movie.id]) {
-                return moviePosterMap[movie.id];
-            }
-
-            // Priority 3: Check database mapping if movie has numeric ID
-            const numericId = parseInt(movie.id);
-            if (!isNaN(numericId) && movieDatabase[numericId]) {
-                return movieDatabase[numericId].poster || 'uploads/posters/default.jpg';
-            }
-
-            // Priority 4: Try to extract from ID string
-            const idToPathMap = {
-                'SORE': 'poster_sore.jpg',
-                'PETAKA': 'poster_petaka.jpg',
-                'DILAN': 'poster_dilan.jpg',
-                'REST': 'poster_restarea.jpg',
-                'TUKAR': 'poster_tukartakdir.jpg',
-                'RANGGA': 'poster_aadc.jpg',
-                'AADC': 'poster_aadc.jpg'
-            };
-
-            for (const [key, filename] of Object.entries(idToPathMap)) {
-                if (movie.id && movie.id.includes(key)) {
-                    return 'uploads/posters/' + filename;
-                }
-            }
-
-            // Default fallback
-            return 'uploads/posters/default.jpg';
-        }
-
-        function removeMovie(movieId) {
-            if (!confirm('Apakah Anda yakin ingin menghapus film ini dari Daftar Tonton?')) {
-                return;
-            }
-
-            let watchlist = getWatchlist();
-            const initialLength = watchlist.length;
-            
-            watchlist = watchlist.filter(movie => movie.id !== movieId);
-            
-            if (watchlist.length < initialLength) {
-                saveWatchlist(watchlist);
-                renderWatchlist();
-                
-                // Show success message
-                const notification = document.createElement('div');
-                notification.style.cssText = 'position: fixed; top: 20px; right: 20px; background: linear-gradient(135deg, #27ae60, #229954); color: white; padding: 15px 25px; border-radius: 10px; box-shadow: 0 5px 20px rgba(39, 174, 96, 0.4); z-index: 1000; font-weight: 600;';
-                notification.innerHTML = '<i class="fas fa-check-circle"></i> Film berhasil dihapus!';
-                document.body.appendChild(notification);
-                
-                setTimeout(() => {
-                    notification.style.opacity = '0';
-                    notification.style.transition = 'opacity 0.5s ease';
-                    setTimeout(() => notification.remove(), 500);
-                }, 2000);
-            }
-        }
-
-        function renderWatchlist() {
-            const watchlist = getWatchlist();
-            container.innerHTML = '';
-
-            console.log('Rendering watchlist:', watchlist); // Debug
-
-            // Jika kosong
-            if (watchlist.length === 0) {
-                container.className = '';
-                container.innerHTML = `
-                    <div class="empty-message">
-                        <i class="fas fa-film"></i>
-                        <h3>Daftar Tonton Kosong</h3>
-                        <p>Anda belum menambahkan film apapun ke daftar tonton.</p>
-                        <p style="margin-top: 20px;">
-                            <a href="user.php" style="color: var(--primary-color); text-decoration: none; font-weight: 600;">
-                                <i class="fas fa-arrow-left"></i> Kembali ke Beranda
-                            </a>
-                        </p>
-                    </div>
-                `;
-                return;
-            }
-            
-            container.className = 'watchlist-grid';
-
-            watchlist.forEach(movie => {
-                const card = document.createElement('div');
-                card.className = 'movie-card';
-                
-                const posterSrc = getPosterPath(movie);
-                console.log('Movie:', movie.title, 'Poster:', posterSrc); // Debug
-                
-                card.innerHTML = `
-                    <div class="poster-container">
-                        <span class="favorite-badge"><i class="fas fa-heart"></i> Favorit</span>
-                        <img src="${posterSrc}" alt="Poster ${movie.title}" class="movie-poster" onerror="this.src='uploads/posters/default.jpg';">
-                        <div class="poster-overlay"></div>
-                    </div>
-                    <div class="movie-info">
-                        <h3>${movie.title}</h3>
-                        <p class="movie-genre"><i class="fas fa-tags"></i> ${movie.genre || 'Genre tidak tersedia'}</p>
-                        <button class="remove-btn" data-movie-id="${movie.id}">
-                            <i class="fas fa-trash-alt"></i> Hapus dari Daftar
-                        </button>
-                    </div>
-                `;
-                container.appendChild(card);
-            });
-            
-            // Event listener untuk tombol hapus
-            document.querySelectorAll('.remove-btn').forEach(button => {
-                button.addEventListener('click', function() {
-                    const movieId = this.getAttribute('data-movie-id');
-                    removeMovie(movieId);
-                });
-            });
-        }
-
-        // Load watchlist saat halaman dimuat
-        document.addEventListener('DOMContentLoaded', renderWatchlist);
     </script>
 </body>
 </html>

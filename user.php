@@ -6,10 +6,29 @@ ini_set('display_errors', 1);
 // Koneksi + session dari config.php (database: movie_review_db)
 require __DIR__ . '/config.php';
 $pdo = db();
+if (session_status() === PHP_SESSION_NONE) session_start();
+
+// Halaman user selalu diambil baru dari server (rating/review terbaru, popup tidak muncul ulang saat Back)
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
 $isLoggedIn = isset($_SESSION['user_id']);
 $currentUserName = $_SESSION['username'] ?? 'Guest';
-$loginSuccess = isset($_GET['login_success']) ? htmlspecialchars($_GET['login_success']) : null;
+
+// ==========================================
+// 👋 Popup "Selamat Datang" hanya muncul SEKALI setelah login.
+// login_action.php mengirim ?login_success=..., di sini diubah jadi "flash" di session,
+// lalu URL dibersihkan. Jadi saat user buka film lalu tekan Back, popup tidak muncul lagi.
+// ==========================================
+if (isset($_GET['login_success'])) {
+    if ($isLoggedIn) { $_SESSION['welcome_flash'] = $currentUserName; }
+    header('Location: user.php');
+    exit;
+}
+$welcomeName = null;
+if (!empty($_SESSION['welcome_flash'])) {
+    $welcomeName = htmlspecialchars($_SESSION['welcome_flash']);
+    unset($_SESSION['welcome_flash']);   // dipakai sekali, langsung dihapus
+}
 
 function getPosterPath($posterFromDB) {
     if (empty($posterFromDB)) return null;
@@ -20,27 +39,24 @@ function getPosterPath($posterFromDB) {
     return null;
 }
 
+// Setiap film punya file ulasan sendiri (user bisa review & rating di dalamnya).
+// Film baru yang diupload lewat admin.php otomatis dibuka lewat ulasan_sore.php?id=ID (tanpa file tambahan)
 function generateMovieCardLink($movie) {
-    // user.php = halaman member: kartu film membuka halaman yang BISA memberi rating & ulasan
-    // (index.php memakai halaman ulasan_*.php yang hanya bisa dilihat)
     $movieLinks = array(
-        1 => 'film_sore.php',
-        2 => 'Petaka_Gunung_Gede.php',
-        3 => 'Dilan_1990.php',
-        4 => 'rest_area.php',
-        5 => 'tukar_takdir.php',
-        6 => 'rangga___cinta.php'
+        1 => 'ulasan_sore.php',
+        2 => 'ulasan_petaka_gunung_gede.php',
+        3 => 'ulasan_dilan1990.php',
+        4 => 'ulasan_rest_area.php',
+        5 => 'ulasan_tukartakdir.php',
+        6 => 'ulasan_rangga&cinta.php'
     );
-    return isset($movieLinks[$movie['id']]) ? $movieLinks[$movie['id']] : 'movie_detail.php?id=' . (int)$movie['id'];
+    $id = (int)$movie['id'];
+    return isset($movieLinks[$id]) ? str_replace('&', '%26', $movieLinks[$id]) : 'ulasan_sore.php?id=' . $id;
 }
 
 // ==========================================
-// 🔥 RANKING FILM (semua film berstatus 'Sudah Rilis' / Daftar Film)
+// 🔥 RANKING FILM (semua film berstatus 'released' / Daftar Film)
 // Skor = (jumlah komentar x 2 + jumlah like) x rata-rata rating
-// - Komentar & like banyak  -> skor naik
-// - Komentar bernilai rendah -> skor tertahan (dikali rata-rata rating)
-// Semua 6 film dihitung ulang tiap halaman dibuka, jadi film di "Daftar Film"
-// yang skornya melonjak otomatis naik ke Top 3, dan sebaliknya.
 // ==========================================
 function fetchRankedMovies($pdo) {
     $withLikes = "
@@ -65,7 +81,6 @@ function fetchRankedMovies($pdo) {
     try {
         $rows = $pdo->query($withLikes)->fetchAll(PDO::FETCH_ASSOC);
     } catch (PDOException $e) {
-        // Jika tabel/kolom like tidak ada, tetap jalan tanpa like
         $rows = $pdo->query($withoutLikes)->fetchAll(PDO::FETCH_ASSOC);
     }
 
@@ -84,13 +99,47 @@ function fetchRankedMovies($pdo) {
     return $rows;
 }
 
-$rankedMovies      = fetchRankedMovies($pdo);
-$trendingMovies    = array_slice($rankedMovies, 0, 3);   // Top 3
-$recommendedMovies = array_slice($rankedMovies, 3);      // Daftar Film (semua film rilis di luar Top 3)
+$rankedMovies   = fetchRankedMovies($pdo);
+$trendingMovies = array_slice($rankedMovies, 0, 3);   // Top 3 Trending
+$topRank = array();                                    // id film => peringkat (1..3)
+foreach ($trendingMovies as $i => $m) { $topRank[$m['id']] = $i + 1; }
+
+// ==========================================
+// 🎞️ DAFTAR FILM = SEMUA film rilis (termasuk yang masuk Top 3)
+// Urutan: film terbaru masuk -> paling depan (baris 1, urutan 1)
+// ==========================================
+$allMovies = $rankedMovies;
+usort($allMovies, function ($a, $b) {
+    $ta = strtotime($a['released_at'] ?? ($a['created_at'] ?? '')) ?: 0;
+    $tb = strtotime($b['released_at'] ?? ($b['created_at'] ?? '')) ?: 0;
+    return [$tb, $b['id']] <=> [$ta, $a['id']];
+});
+
+// Bagi film ke beberapa baris secara merata:
+//  - maksimal 15 film per baris (batas keras)
+//  - ideal sekitar 10 film per baris, dan baris pertama tidak dibiarkan penuh sendirian
+//  - sisa pembagian masuk ke baris paling atas
+//  contoh: 6 film => 3+3 | 10 => 5+5 | 20 => 10+10 | 21 => 7+7+7
+function splitIntoRows($items, $maxPerRow = 15, $idealPerRow = 10) {
+    $n = count($items);
+    if ($n === 0) return array();
+    $rows = ($n === 1) ? 1 : max(2, (int)ceil($n / $idealPerRow));
+    $rows = max($rows, (int)ceil($n / $maxPerRow));
+    $base = intdiv($n, $rows);
+    $extra = $n % $rows;
+    $result = array();
+    $offset = 0;
+    for ($r = 0; $r < $rows; $r++) {
+        $size = $base + ($r < $extra ? 1 : 0);
+        $result[] = array_slice($items, $offset, $size);
+        $offset += $size;
+    }
+    return $result;
+}
 
 // ==========================================
 // 🎬 COMING SOON - hanya film yang diupload admin dengan status "Coming Soon".
-// Tidak ada kartu placeholder: kalau kosong, section Coming Soon disembunyikan.
+// Kalau kosong, section Coming Soon tidak ditampilkan sama sekali.
 // ==========================================
 $comingSoonMovies = $pdo->query("
     SELECT m.* FROM movies m
@@ -108,12 +157,12 @@ function formatTanggalID($date) {
 // Komponen kartu film
 // ==========================================
 function renderMovieCard($movie, $badgeHtml, $bg, $link) {
-    $posterPath = getPosterPath($movie['poster']);
+    $posterPath = getPosterPath($movie['poster'] ?? '');
     ob_start(); ?>
-    <div class="movie-card">
-        <a href="<?php echo $link; ?>"<?php echo $link === '#' ? ' onclick="showComingSoonAlert(event)"' : ''; ?>>
+    <div class="movie-card" data-id="<?php echo (int)$movie['id']; ?>">
+        <a href="<?php echo htmlspecialchars($link); ?>" draggable="false">
             <?php if ($posterPath): ?>
-                <img src="<?php echo htmlspecialchars($posterPath); ?>" alt="<?php echo htmlspecialchars($movie['title']); ?>" class="movie-poster">
+                <img src="<?php echo htmlspecialchars($posterPath); ?>" alt="<?php echo htmlspecialchars($movie['title']); ?>" class="movie-poster" draggable="false" loading="lazy">
             <?php else: ?>
                 <div class="movie-poster" style="background:<?php echo $bg; ?>;display:flex;align-items:center;justify-content:center;color:#fff;font-size:40px;">🎬</div>
             <?php endif; ?>
@@ -128,6 +177,38 @@ function renderMovieCard($movie, $badgeHtml, $bg, $link) {
             </div>
             <div class="movie-rating">⭐ <?php echo number_format($movie['avg_rating'], 1); ?>/5.0</div>
         </div>
+    </div>
+    <?php
+    return ob_get_clean();
+}
+
+function renderComingSoonCard($movie) {
+    $posterPath = getPosterPath($movie['poster'] ?? '');
+    ob_start(); ?>
+    <div class="movie-card" data-id="<?php echo (int)$movie['id']; ?>">
+        <a href="#" onclick="showComingSoonAlert(event)" draggable="false">
+            <?php if ($posterPath): ?>
+                <img src="<?php echo htmlspecialchars($posterPath); ?>" alt="<?php echo htmlspecialchars($movie['title']); ?>" class="movie-poster" draggable="false" loading="lazy">
+            <?php else: ?>
+                <div class="movie-poster" style="background:#558b2f;display:flex;align-items:center;justify-content:center;color:#fff;font-size:40px;">🎬</div>
+            <?php endif; ?>
+            <div class="new-badge"><i class="fas fa-clock"></i> Coming Soon</div>
+        </a>
+        <div class="movie-info">
+            <div class="movie-title"><?php echo htmlspecialchars($movie['title']); ?></div>
+            <div class="movie-genre"><?php echo htmlspecialchars($movie['genre'] ?? ''); ?></div>
+            <div class="movie-rating"><?php echo !empty($movie['release_date']) ? '📅 Rilis ' . formatTanggalID($movie['release_date']) : '⏳ Segera Hadir'; ?></div>
+        </div>
+    </div>
+    <?php
+    return ob_get_clean();
+}
+
+// Satu baris poster yang bisa digeser ke samping (swipe di HP, drag di laptop)
+function renderMovieRow($cardsHtml) {
+    ob_start(); ?>
+    <div class="row-wrap">
+        <div class="movie-row"><?php echo implode('', $cardsHtml); ?></div>
     </div>
     <?php
     return ob_get_clean();
@@ -150,14 +231,18 @@ body { font-family: 'Inter', sans-serif; line-height: 1.6; background-color: #0a
 .nav-brand h1 { color: #e50914; font-size: 1.8rem; font-weight: 700; }
 .nav-search { display: flex; align-items: center; flex: 1; max-width: 400px; margin: 0 2rem; }
 .search-input { flex: 1; padding: 0.8rem 1rem; border: 1px solid #333; border-radius: 4px 0 0 4px; background-color: #1a1a1a; color: white; font-size: 0.9rem; outline: none; }
+.search-input:focus { border-color: #e50914; }
 .search-btn { padding: 0.8rem 1rem; background-color: #e50914; border: none; border-radius: 0 4px 4px 0; color: white; cursor: pointer; }
 .nav-menu { display: flex; align-items: center; gap: 2rem; }
 .nav-link { color: #ccc; text-decoration: none; font-weight: 500; transition: color 0.3s ease; }
 .nav-link:hover { color: #e50914; }
+
 .section { padding: 4rem 0; }
-.section-title { font-size: 2rem; margin-bottom: 2rem; color: white; text-align: center; }
+.section-title { font-size: 2rem; margin-bottom: 0.5rem; color: white; text-align: center; font-weight: 700; }
 .section-title i { color: #e50914; margin-right: 10px; }
+.section-sub { text-align: center; color: #888; font-size: 0.95rem; margin-bottom: 2rem; }
 .movies-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 2rem; margin-top: 2rem; }
+.trending-grid { grid-template-columns: repeat(3, 1fr); }
 .movie-card { background-color: #1a1a1a; border-radius: 8px; overflow: hidden; transition: transform 0.3s ease, box-shadow 0.3s ease; position: relative; }
 .movie-card:hover { transform: translateY(-5px); box-shadow: 0 10px 25px rgba(229, 9, 20, 0.3); }
 .movie-card a { display: block; position: relative; padding-top: 150%; overflow: hidden; }
@@ -165,10 +250,25 @@ body { font-family: 'Inter', sans-serif; line-height: 1.6; background-color: #0a
 .movie-info { padding: 1rem; }
 .movie-title { font-size: 1.2rem; font-weight: 600; margin-bottom: 0.5rem; color: white; }
 .movie-genre { color: #999; font-size: 0.9rem; margin-bottom: 0.5rem; }
-.movie-rating { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1rem; color: #ffc107; font-weight: 600; }
-.trending-badge, .new-badge { position: absolute; top: 10px; right: 10px; background-color: rgba(229, 9, 20, 0.9); color: white; padding: 5px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; z-index: 10; }
+.movie-rating { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; color: #ffc107; font-size: 0.95rem; font-weight: 600; }
+.trending-badge, .new-badge { position: absolute; top: 10px; right: 10px; background-color: rgba(229, 9, 20, 0.95); color: white; padding: 5px 10px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; z-index: 10; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5); }
 .empty-section { text-align: center; padding: 60px 20px; color: #666; }
 .empty-section i { font-size: 4em; margin-bottom: 20px; color: #333; }
+.empty-section h3 { font-size: 1.5em; margin-bottom: 10px; color: #999; }
+.empty-section p { color: #666; }
+.movie-stats { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; margin-bottom: 0.6rem; color: #999; font-size: 0.85rem; }
+.movie-stats .likes { color: #ff4d6d; font-weight: 600; }
+.movie-stats .comments { color: #9ad; font-weight: 600; }
+
+/* ===== Baris poster yang bisa digeser horizontal ===== */
+.row-wrap { position: relative; margin-bottom: 1.2rem; }
+.movie-row { display: flex; gap: 1.25rem; overflow-x: auto; overflow-y: hidden; padding: 12px 6px 16px; scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; cursor: grab; scrollbar-width: thin; scrollbar-color: #e50914 #1a1a1a; }
+.movie-row.dragging { cursor: grabbing; scroll-snap-type: none; user-select: none; }
+.movie-row::-webkit-scrollbar { height: 8px; }
+.movie-row::-webkit-scrollbar-track { background: #1a1a1a; border-radius: 4px; }
+.movie-row::-webkit-scrollbar-thumb { background: #e50914; border-radius: 4px; }
+.movie-row .movie-card { flex: 0 0 210px; scroll-snap-align: start; }
+
 .footer { background-color: #111; padding: 3rem 0 1rem; margin-top: 4rem; border-top: 1px solid #333; }
 .footer-content { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 2rem; margin-bottom: 2rem; }
 .footer-section h4 { color: #e50914; margin-bottom: 1rem; font-size: 1.2rem; }
@@ -179,11 +279,13 @@ body { font-family: 'Inter', sans-serif; line-height: 1.6; background-color: #0a
 .social-links a { font-size: 1.5rem; }
 .footer-bottom { border-top: 1px solid #333; padding-top: 1rem; text-align: center; color: #888; }
 .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.8); z-index: 9999; justify-content: center; align-items: center; }
-.modal-content { background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%); padding: 40px; border-radius: 15px; text-align: center; max-width: 400px; box-shadow: 0 10px 50px rgba(229, 9, 20, 0.5); }
+.modal-content { background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%); padding: 40px; border-radius: 15px; text-align: center; max-width: 400px; box-shadow: 0 10px 50px rgba(229, 9, 20, 0.5); animation: modalSlideIn 0.3s ease; }
+@keyframes modalSlideIn { from { transform: translateY(-50px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 .modal-content i { font-size: 4em; color: #e50914; margin-bottom: 20px; }
 .modal-content h3 { font-size: 1.8em; margin-bottom: 15px; color: #fff; }
 .modal-content p { color: #ccc; font-size: 1.1em; margin-bottom: 25px; }
-.modal-close-btn { background: #e50914; color: white; border: none; padding: 12px 30px; border-radius: 5px; font-size: 1em; font-weight: 600; cursor: pointer; }
+.modal-close-btn { background: #e50914; color: white; border: none; padding: 12px 30px; border-radius: 5px; font-size: 1em; font-weight: 600; cursor: pointer; transition: background 0.3s ease; }
+.modal-close-btn:hover { background: #b8070f; }
 .login-success-popup { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%); padding: 40px 60px; border-radius: 15px; box-shadow: 0 10px 50px rgba(229, 9, 20, 0.5); z-index: 9999; text-align: center; border: 2px solid #e50914; display: none; }
 .login-success-popup i { font-size: 4em; color: #00ff40; margin-bottom: 20px; }
 .login-success-popup h2 { font-size: 2em; margin-bottom: 10px; color: #e50914; }
@@ -193,29 +295,34 @@ body { font-family: 'Inter', sans-serif; line-height: 1.6; background-color: #0a
     .nav-container { flex-direction: column; gap: 1rem; }
     .nav-search { margin: 1rem 0; max-width: 100%; }
     .movies-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+    .trending-grid { grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+    .movie-row .movie-card { flex-basis: 165px; }
     .footer-content { grid-template-columns: 1fr; text-align: center; }
+    .social-links { justify-content: center; }
+
 }
-.movie-stats { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; margin-bottom: 0.6rem; color: #999; font-size: 0.85rem; }
-.movie-stats .likes { color: #ff4d6d; font-weight: 600; }
-.movie-stats .comments { color: #9ad; font-weight: 600; }
-.coming-placeholder { background: linear-gradient(160deg, #2a2a2a, #151515); flex-direction: column; gap: 10px; text-align: center; padding: 10px; }
-.coming-placeholder small { font-size: 0.8rem; color: #888; }
 </style>
 </head>
 <body>
 
-<?php if ($loginSuccess): ?>
+<?php if ($welcomeName): ?>
 <div class="popup-overlay" id="popupOverlay" style="display:block;"></div>
 <div class="login-success-popup" id="loginSuccessPopup" style="display:block;">
     <i class="fas fa-check-circle"></i>
     <h2>SELAMAT DATANG</h2>
-    <p class="username"><?php echo $loginSuccess; ?></p>
+    <p class="username"><?php echo $welcomeName; ?></p>
 </div>
 <script>
-setTimeout(function() {
-    document.getElementById('loginSuccessPopup').style.display = 'none';
-    document.getElementById('popupOverlay').style.display = 'none';
-}, 5000);
+(function () {
+    function closeWelcome() {
+        var p = document.getElementById('loginSuccessPopup');
+        var o = document.getElementById('popupOverlay');
+        if (p) p.style.display = 'none';
+        if (o) o.style.display = 'none';
+    }
+    setTimeout(closeWelcome, 4000);
+    document.getElementById('popupOverlay').addEventListener('click', closeWelcome);
+})();
 </script>
 <?php endif; ?>
 
@@ -234,11 +341,12 @@ setTimeout(function() {
         </div>
     </div>
 </nav>
+
 <?php if (count($trendingMovies) > 0): ?>
 <section class="section trending-section">
     <div class="container">
         <h2 class="section-title"><i class="fas fa-fire"></i> Top 3 Film Trending</h2>
-        <div class="movies-grid">
+        <div class="movies-grid trending-grid">
             <?php foreach ($trendingMovies as $i => $movie):
                 echo renderMovieCard($movie, '<div class="trending-badge">🔥 Top ' . ($i + 1) . '</div>', '#666', generateMovieCardLink($movie));
             endforeach; ?>
@@ -247,15 +355,19 @@ setTimeout(function() {
 </section>
 <?php endif; ?>
 
-<?php if (count($recommendedMovies) > 0): ?>
+<?php if (count($allMovies) > 0): ?>
 <section class="section">
     <div class="container">
         <h2 class="section-title"><i class="fas fa-list"></i> Daftar Film</h2>
-        <div class="movies-grid">
-            <?php foreach ($recommendedMovies as $movie):
-                echo renderMovieCard($movie, '<div class="new-badge"><i class="fas fa-star"></i> Daftar Film</div>', '#0277bd', generateMovieCardLink($movie));
-            endforeach; ?>
-        </div>
+        <p class="section-sub">Geser ke samping untuk melihat film lainnya</p>
+        <?php foreach (splitIntoRows($allMovies) as $rowMovies):
+            $cards = array();
+            foreach ($rowMovies as $movie) {
+                $badge = isset($topRank[$movie['id']]) ? '<div class="trending-badge">🔥 Top ' . $topRank[$movie['id']] . '</div>' : '';
+                $cards[] = renderMovieCard($movie, $badge, '#0277bd', generateMovieCardLink($movie));
+            }
+            echo renderMovieRow($cards);
+        endforeach; ?>
     </div>
 </section>
 <?php endif; ?>
@@ -264,25 +376,12 @@ setTimeout(function() {
 <section class="section">
     <div class="container">
         <h2 class="section-title"><i class="fas fa-calendar-alt"></i> Coming Soon!</h2>
-        <div class="movies-grid">
-            <?php foreach ($comingSoonMovies as $movie): $posterPath = getPosterPath($movie['poster']); ?>
-                <div class="movie-card">
-                    <a href="#" onclick="showComingSoonAlert(event)">
-                        <?php if ($posterPath): ?>
-                            <img src="<?php echo htmlspecialchars($posterPath); ?>" alt="<?php echo htmlspecialchars($movie['title']); ?>" class="movie-poster">
-                        <?php else: ?>
-                            <div class="movie-poster" style="background:#558b2f;display:flex;align-items:center;justify-content:center;color:#fff;font-size:40px;">🎬</div>
-                        <?php endif; ?>
-                        <div class="new-badge"><i class="fas fa-clock"></i> Coming Soon</div>
-                    </a>
-                    <div class="movie-info">
-                        <div class="movie-title"><?php echo htmlspecialchars($movie['title']); ?></div>
-                        <div class="movie-genre"><?php echo htmlspecialchars($movie['genre'] ?? ''); ?></div>
-                        <div class="movie-rating"><?php echo !empty($movie['release_date']) ? '📅 Rilis ' . formatTanggalID($movie['release_date']) : '⏳ Segera Hadir'; ?></div>
-                    </div>
-                </div>
-            <?php endforeach; ?>
-        </div>
+        <p class="section-sub">Film yang akan segera hadir</p>
+        <?php
+            $cards = array();
+            foreach ($comingSoonMovies as $movie) { $cards[] = renderComingSoonCard($movie); }
+            echo renderMovieRow($cards);
+        ?>
     </div>
 </section>
 <?php endif; ?>
@@ -337,6 +436,26 @@ window.onclick = function(event) {
     if (event.target === modal) modal.style.display = 'none';
 }
 function esc(s) { return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c])); }
+
+// ===== Baris poster: drag mouse di laptop, swipe di HP =====
+document.querySelectorAll('.row-wrap').forEach(wrap => {
+    const row = wrap.querySelector('.movie-row');
+
+    let down = false, moved = false, startX = 0, startScroll = 0;
+    row.addEventListener('mousedown', e => { down = true; moved = false; startX = e.pageX; startScroll = row.scrollLeft; });
+    window.addEventListener('mouseup', () => { down = false; row.classList.remove('dragging'); });
+    row.addEventListener('mousemove', e => {
+        if (!down) return;
+        const dx = e.pageX - startX;
+        if (Math.abs(dx) > 5) { moved = true; row.classList.add('dragging'); }
+        row.scrollLeft = startScroll - dx;
+    });
+    // setelah drag, jangan ikut membuka link film
+    row.addEventListener('click', e => { if (moved) { e.preventDefault(); e.stopPropagation(); moved = false; } }, true);
+    row.addEventListener('dragstart', e => e.preventDefault());
+});
+
+// ===== Pencarian =====
 document.addEventListener("DOMContentLoaded", () => {
     const searchInput = document.getElementById("searchInput");
     const searchBtn = document.getElementById("searchBtn");
@@ -346,12 +465,12 @@ document.addEventListener("DOMContentLoaded", () => {
     function performSearch() {
         const query = searchInput.value.toLowerCase().trim();
         let foundCount = 0;
+        const seen = new Set();   // film yang sama (Top 3 + Daftar Film) hanya ditampilkan sekali
         let searchResultsContainer = document.getElementById("searchResultsContainer");
         if (searchResultsContainer) searchResultsContainer.remove();
 
         if (query === "") {
             sections.forEach(s => s.style.display = "");
-            movieCards.forEach(c => c.style.display = "");
             return;
         }
 
@@ -375,9 +494,12 @@ document.addEventListener("DOMContentLoaded", () => {
         moviesGrid.style.cssText = "margin-top: 1rem;";
 
         movieCards.forEach(card => {
+            const id = card.dataset.id;
+            if (seen.has(id)) return;
             const title = card.querySelector(".movie-title")?.textContent.toLowerCase() || "";
             const genre = card.querySelector(".movie-genre")?.textContent.toLowerCase() || "";
             if (title.includes(query) || genre.includes(query)) {
+                seen.add(id);
                 const clonedCard = card.cloneNode(true);
                 clonedCard.style.display = "";
                 moviesGrid.appendChild(clonedCard);
@@ -404,7 +526,8 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         searchResultsContainer.appendChild(container);
-        document.querySelector(".hero").insertAdjacentElement("afterend", searchResultsContainer);
+        const anchor = document.querySelector(".hero") || document.querySelector(".navbar");
+        anchor.insertAdjacentElement("afterend", searchResultsContainer);
         searchResultsContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 
@@ -416,6 +539,16 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (searchBtn) {
         searchBtn.addEventListener("click", (e) => { e.preventDefault(); performSearch(); });
+    }
+});
+
+// Kalau halaman dibuka lagi lewat tombol Back, popup selamat datang tidak boleh muncul lagi
+window.addEventListener('pageshow', function (e) {
+    if (e.persisted) {
+        ['loginSuccessPopup', 'popupOverlay'].forEach(function (id) {
+            var el = document.getElementById(id);
+            if (el) el.parentNode.removeChild(el);
+        });
     }
 });
 </script>

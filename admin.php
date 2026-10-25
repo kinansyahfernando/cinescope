@@ -18,6 +18,29 @@ try {
     die("❌ Database Connection Error: " . $e->getMessage());
 }
 
+// ==================== AUTO MIGRATION: kolom status & release_date ====================
+// status: 'released' = Daftar Film, 'coming_soon' = Coming Soon
+try {
+    $cols = $pdo->query("SHOW COLUMNS FROM movies")->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('status', $cols)) {
+        $pdo->exec("ALTER TABLE movies ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'released'");
+    }
+    if (!in_array('release_date', $cols)) {
+        $pdo->exec("ALTER TABLE movies ADD COLUMN release_date DATE NULL");
+    }
+    // released_at = waktu film masuk ke Daftar Film (film terbaru tampil paling depan)
+    if (!in_array('released_at', $cols)) {
+        $pdo->exec("ALTER TABLE movies ADD COLUMN released_at DATETIME NULL");
+        $pdo->exec("UPDATE movies SET released_at = COALESCE(created_at, NOW()) WHERE released_at IS NULL AND status = 'released'");
+    }
+} catch (PDOException $e) {
+    die("❌ Migration Error: " . $e->getMessage());
+}
+
+function normalizeStatus($s) {
+    return $s === 'coming_soon' ? 'coming_soon' : 'released';
+}
+
 // Create upload folders if not exist
 $uploadDirs = ['uploads', 'uploads/posters', 'uploads/videos'];
 foreach ($uploadDirs as $dir) {
@@ -176,11 +199,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_movie'])) {
     }
     
     // TIDAK PERLU input average_rating manual - biarkan 0 dan akan diupdate otomatis dari reviews
-    $sql = "INSERT INTO movies (title, release_year, duration, genre, director, synopsis, poster, trailer_url, average_rating, created_at) 
-            VALUES (:title, :release_year, :duration, :genre, :director, :synopsis, :poster, :trailer_url, 0, NOW())";
+    $status = normalizeStatus($_POST['status'] ?? 'released');
+    $releaseDate = !empty($_POST['release_date']) ? $_POST['release_date'] : null;
+
+    $sql = "INSERT INTO movies (title, release_year, duration, genre, director, synopsis, poster, trailer_url, status, release_date, released_at, average_rating, created_at) 
+            VALUES (:title, :release_year, :duration, :genre, :director, :synopsis, :poster, :trailer_url, :status, :release_date, " . ($status === 'released' ? 'NOW()' : 'NULL') . ", 0, NOW())";
     
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
+        ':status' => $status,
+        ':release_date' => $releaseDate,
         ':title' => $_POST['title'],
         ':release_year' => $_POST['release_year'],
         ':duration' => $_POST['duration'],
@@ -191,7 +219,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_movie'])) {
         ':trailer_url' => $_POST['trailer_url']
     ]);
     
-    header("Location: admin.php?action=movies&msg=created");
+    header("Location: admin.php?action=movies&status=" . $status . "&msg=" . ($status === 'coming_soon' ? 'created_coming' : 'created'));
     exit;
 }
 
@@ -221,11 +249,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_movie'])) {
             synopsis = :synopsis,
             poster = :poster,
             trailer_url = :trailer_url,
+            released_at = IF(:status_new = 'released' AND status = 'coming_soon', NOW(), released_at),
+            status = :status,
+            release_date = :release_date,
             updated_at = NOW()
             WHERE id = :id";
     
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
+        ':status_new' => normalizeStatus($_POST['status'] ?? 'released'),
+        ':status' => normalizeStatus($_POST['status'] ?? 'released'),
+        ':release_date' => !empty($_POST['release_date']) ? $_POST['release_date'] : null,
         ':title' => $_POST['title'],
         ':release_year' => $_POST['release_year'],
         ':duration' => $_POST['duration'],
@@ -252,6 +286,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_movie'])) {
     exit;
 }
 
+// PINDAHKAN STATUS FILM (Coming Soon -> Daftar Film, atau sebaliknya)
+if (isset($_GET['set_status'], $_GET['id']) && is_numeric($_GET['id'])) {
+    $newStatus = normalizeStatus($_GET['set_status']);
+    $stmt = $pdo->prepare("UPDATE movies SET released_at = IF(:status_new = 'released', NOW(), released_at), status = :status, updated_at = NOW() WHERE id = :id");
+    $stmt->execute([':status_new' => $newStatus, ':status' => $newStatus, ':id' => (int)$_GET['id']]);
+
+    $back = $newStatus === 'released' ? 'coming_soon' : 'released';
+    header("Location: admin.php?action=movies&status=" . $back . "&msg=" . ($newStatus === 'released' ? 'moved_released' : 'moved_coming'));
+    exit;
+}
+
 // DELETE MOVIE
 if (isset($_GET['delete']) && is_numeric($_GET['delete'])) {
     $movieId = (int)$_GET['delete'];
@@ -267,7 +312,7 @@ if (isset($_GET['delete']) && is_numeric($_GET['delete'])) {
     $stmt = $pdo->prepare("DELETE FROM movies WHERE id = :id");
     $stmt->execute([':id' => $movieId]);
     
-    header("Location: admin.php?action=movies&msg=deleted");
+    header("Location: admin.php?action=movies&status=" . urlencode($_GET['status'] ?? 'all') . "&msg=deleted");
     exit;
 }
 
@@ -303,6 +348,18 @@ if (isset($_GET['msg'])) {
             $message = "✅ Film berhasil ditambahkan!"; 
             $messageType = 'success'; 
             break;
+        case 'created_coming':
+            $message = "✅ Film berhasil ditambahkan ke <strong>Coming Soon</strong>!";
+            $messageType = 'success';
+            break;
+        case 'moved_released':
+            $message = "🎉 Film berhasil dipindahkan ke <strong>Daftar Film</strong> dan sekarang tampil di website!";
+            $messageType = 'success';
+            break;
+        case 'moved_coming':
+            $message = "✅ Film berhasil dikembalikan ke <strong>Coming Soon</strong>.";
+            $messageType = 'success';
+            break;
         case 'updated': 
             $message = "✅ Film berhasil diupdate!"; 
             $messageType = 'success'; 
@@ -337,6 +394,17 @@ $reviewsStmt = $pdo->query("SELECT r.*, m.title as movie_title, u.username, u.fu
     LEFT JOIN users u ON r.user_id = u.id
     ORDER BY r.created_at DESC LIMIT 100");
 $reviews = $reviewsStmt->fetchAll();
+
+$statusFilter = $_GET['status'] ?? 'all';
+if (!in_array($statusFilter, ['all', 'released', 'coming_soon'])) $statusFilter = 'all';
+
+$countReleased = count(array_filter($movies, fn($m) => ($m['status'] ?? 'released') !== 'coming_soon'));
+$countComing   = count($movies) - $countReleased;
+
+$filteredMovies = array_values(array_filter($movies, function($m) use ($statusFilter) {
+    $s = ($m['status'] ?? 'released') === 'coming_soon' ? 'coming_soon' : 'released';
+    return $statusFilter === 'all' || $s === $statusFilter;
+}));
 
 $moviesListStmt = $pdo->query("SELECT id, title FROM movies ORDER BY title ASC");
 $moviesList = $moviesListStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -773,7 +841,29 @@ if ($action === 'edit' && isset($_GET['id'])) {
             color: #856404;
         }
         
+        .status-tabs { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+        .status-tabs a {
+            padding: 10px 20px; background: white; color: #667eea; border-radius: 25px;
+            text-decoration: none; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.08); transition: all 0.3s;
+        }
+        .status-tabs a:hover, .status-tabs a.active { background: linear-gradient(135deg, #667eea, #764ba2); color: white; }
+        .status-badge { padding: 5px 12px; border-radius: 15px; font-size: 0.82em; font-weight: 600; white-space: nowrap; }
+        .status-badge.coming { background: #fff3cd; color: #856404; }
+        .status-badge.released { background: #d4edda; color: #155724; }
+        .status-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .status-option { cursor: pointer; display: block; }
+        .status-option input { display: none; }
+        .status-option span {
+            display: flex; flex-direction: column; gap: 4px; padding: 16px 18px;
+            border: 2px solid #e0e0e0; border-radius: 10px; transition: all 0.3s; background: white;
+        }
+        .status-option span i { color: #667eea; font-size: 1.3em; }
+        .status-option span small { color: #888; font-weight: normal; }
+        .status-option:hover span { border-color: #667eea; }
+        .status-option input:checked + span { border-color: #667eea; background: #f0f2ff; box-shadow: 0 0 0 3px rgba(102,126,234,0.15); }
+
         @media (max-width: 768px) {
+            .status-choice { grid-template-columns: 1fr; }
             .sidebar {
                 width: 100%;
                 height: auto;
@@ -807,8 +897,8 @@ if ($action === 'edit' && isset($_GET['id'])) {
             <li><a href="?action=dashboard" class="<?php echo $action === 'dashboard' ? 'active' : ''; ?>">
                 <i class="fas fa-home"></i> Dashboard
             </a></li>
-            <li><a href="?action=movies" class="<?php echo $action === 'movies' ? 'active' : ''; ?>">
-                <i class="fas fa-film"></i> Kelola Film
+            <li><a href="?action=movies&status=all" class="<?php echo $action === 'movies' ? 'active' : ''; ?>">
+                <i class="fas fa-film"></i> Daftar Film
             </a></li>
             <li><a href="?action=add" class="<?php echo $action === 'add' ? 'active' : ''; ?>">
                 <i class="fas fa-plus-circle"></i> Tambah Film
@@ -857,6 +947,10 @@ if ($action === 'edit' && isset($_GET['id'])) {
                 <div class="stat-card">
                     <h3><i class="fas fa-film"></i> Total Film</h3>
                     <div class="stat-number"><?php echo $totalMovies; ?></div>
+                </div>
+                <div class="stat-card">
+                    <h3><i class="fas fa-clock"></i> Film Coming Soon</h3>
+                    <div class="stat-number"><?php echo $countComing; ?></div>
                 </div>
                 <div class="stat-card">
                     <h3><i class="fas fa-comments"></i> Total Reviews</h3>
@@ -910,19 +1004,32 @@ if ($action === 'edit' && isset($_GET['id'])) {
             
         <?php elseif ($action === 'movies'): ?>
             <div class="header">
-                <h2>🎥 Kelola Film</h2>
-                <a href="?action=add" class="btn btn-primary">
+                <h2><?php echo $statusFilter === 'coming_soon' ? '⏳ Film Coming Soon' : ($statusFilter === 'released' ? '🎥 Daftar Film' : '🎥 Kelola Film'); ?></h2>
+                <a href="?action=add&status=<?php echo $statusFilter === 'coming_soon' ? 'coming_soon' : 'released'; ?>" class="btn btn-primary">
                     <i class="fas fa-plus"></i> Tambah Film Baru
                 </a>
             </div>
+
+            <div class="status-tabs">
+                <a href="?action=movies&status=all" class="<?php echo $statusFilter === 'all' ? 'active' : ''; ?>">Semua (<?php echo count($movies); ?>)</a>
+                <a href="?action=movies&status=released" class="<?php echo $statusFilter === 'released' ? 'active' : ''; ?>">Daftar Film (<?php echo $countReleased; ?>)</a>
+                <a href="?action=movies&status=coming_soon" class="<?php echo $statusFilter === 'coming_soon' ? 'active' : ''; ?>">Coming Soon (<?php echo $countComing; ?>)</a>
+            </div>
             
             <div class="card">
+                <?php if (count($filteredMovies) === 0): ?>
+                    <div class="empty-state">
+                        <i class="fas fa-film"></i>
+                        <h3>Belum ada film di kategori ini</h3>
+                    </div>
+                <?php else: ?>
                 <table>
                     <thead>
                         <tr>
                             <th>ID</th>
                             <th>Poster</th>
                             <th>Judul</th>
+                            <th>Status</th>
                             <th>Genre</th>
                             <th>Tahun</th>
                             <th>Rating</th>
@@ -931,7 +1038,7 @@ if ($action === 'edit' && isset($_GET['id'])) {
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach($movies as $movie): ?>
+                        <?php foreach($filteredMovies as $movie): $isComing = ($movie['status'] ?? 'released') === 'coming_soon'; ?>
                         <tr>
                             <td><?php echo $movie['id']; ?></td>
                             <td>
@@ -942,15 +1049,36 @@ if ($action === 'edit' && isset($_GET['id'])) {
                                 <?php endif; ?>
                             </td>
                             <td><strong><?php echo htmlspecialchars($movie['title']); ?></strong></td>
+                            <td>
+                                <?php if ($isComing): ?>
+                                    <span class="status-badge coming"><i class="fas fa-clock"></i> Coming Soon</span>
+                                    <?php if (!empty($movie['release_date'])): ?>
+                                        <div style="font-size:12px;color:#888;margin-top:4px;"><?php echo date('d/m/Y', strtotime($movie['release_date'])); ?></div>
+                                    <?php endif; ?>
+                                <?php else: ?>
+                                    <span class="status-badge released"><i class="fas fa-check"></i> Daftar Film</span>
+                                <?php endif; ?>
+                            </td>
                             <td><?php echo htmlspecialchars($movie['genre']); ?></td>
                             <td><?php echo htmlspecialchars($movie['release_year']); ?></td>
                             <td><span class="rating-badge">⭐ <?php echo number_format($movie['calc_avg_rating'], 1); ?></span></td>
                             <td><?php echo $movie['review_count']; ?></td>
-                            <td>
+                            <td style="white-space:nowrap;">
+                                <?php if ($isComing): ?>
+                                    <a href="?set_status=released&id=<?php echo $movie['id']; ?>" class="btn btn-success btn-sm" title="Tampilkan di Daftar Film"
+                                       onclick="return confirm('Pindahkan film ini ke Daftar Film?')">
+                                        <i class="fas fa-arrow-right"></i> Ke Daftar Film
+                                    </a>
+                                <?php else: ?>
+                                    <a href="?set_status=coming_soon&id=<?php echo $movie['id']; ?>" class="btn btn-info btn-sm" title="Kembalikan ke Coming Soon"
+                                       onclick="return confirm('Kembalikan film ini ke Coming Soon?')">
+                                        <i class="fas fa-undo"></i>
+                                    </a>
+                                <?php endif; ?>
                                 <a href="?action=edit&id=<?php echo $movie['id']; ?>" class="btn btn-warning btn-sm">
                                     <i class="fas fa-edit"></i>
                                 </a>
-                                <a href="?delete=<?php echo $movie['id']; ?>" class="btn btn-danger btn-sm" onclick="return confirm('Yakin hapus film ini?')">
+                                <a href="?delete=<?php echo $movie['id']; ?>&status=<?php echo urlencode($statusFilter); ?>" class="btn btn-danger btn-sm" onclick="return confirm('Yakin hapus film ini?')">
                                     <i class="fas fa-trash"></i>
                                 </a>
                             </td>
@@ -958,6 +1086,7 @@ if ($action === 'edit' && isset($_GET['id'])) {
                         <?php endforeach; ?>
                     </tbody>
                 </table>
+                <?php endif; ?>
             </div>
             
         <?php elseif ($action === 'add' || $action === 'edit'): ?>
@@ -981,6 +1110,29 @@ if ($action === 'edit' && isset($_GET['id'])) {
                         <input type="hidden" name="existing_poster" value="<?php echo $editMovie['poster']; ?>">
                     <?php endif; ?>
                     
+                    <?php
+                        $curStatus = $editMovie['status'] ?? ($_GET['status'] ?? 'released');
+                        if ($curStatus !== 'coming_soon') $curStatus = 'released';
+                    ?>
+                    <div class="form-group">
+                        <label>Tempatkan Film Di <span style="color:red;">*</span></label>
+                        <div class="status-choice">
+                            <label class="status-option">
+                                <input type="radio" name="status" value="released" <?php echo $curStatus === 'released' ? 'checked' : ''; ?> onchange="toggleReleaseDate()">
+                                <span><i class="fas fa-film"></i> <strong>Daftar Film</strong><small>Langsung tampil & bisa direview</small></span>
+                            </label>
+                            <label class="status-option">
+                                <input type="radio" name="status" value="coming_soon" <?php echo $curStatus === 'coming_soon' ? 'checked' : ''; ?> onchange="toggleReleaseDate()">
+                                <span><i class="fas fa-clock"></i> <strong>Coming Soon</strong><small>Tampil di section Coming Soon</small></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="form-group" id="releaseDateGroup" style="display:none;">
+                        <label>Tanggal Rilis (untuk Coming Soon)</label>
+                        <input type="date" name="release_date" value="<?php echo htmlspecialchars($editMovie['release_date'] ?? ''); ?>">
+                    </div>
+
                     <div class="form-group">
                         <label>Judul Film <span style="color:red;">*</span></label>
                         <input type="text" name="title" required value="<?php echo $editMovie['title'] ?? ''; ?>" placeholder="Contoh: Sore">
@@ -1194,6 +1346,13 @@ if ($action === 'edit' && isset($_GET['id'])) {
     </div>
     
     <script>
+        function toggleReleaseDate() {
+            const checked = document.querySelector('input[name="status"]:checked');
+            const group = document.getElementById('releaseDateGroup');
+            if (group && checked) group.style.display = checked.value === 'coming_soon' ? 'block' : 'none';
+        }
+        document.addEventListener('DOMContentLoaded', toggleReleaseDate);
+
         function previewImage(input) {
             const preview = document.getElementById('preview');
             if (input.files && input.files[0]) {

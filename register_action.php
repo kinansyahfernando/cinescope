@@ -2,17 +2,24 @@
 // File: register_action.php - WITH USERNAME REDIRECT
 session_start();
 
-// Database Configuration
-$host = '127.0.0.1';
-$dbname = 'movie_review_db';
-$username_db = 'root';
-$password_db = '';
+// ============ PENGATURAN DATABASE HOSTING ============
+// LOCALHOST (Laragon/XAMPP): nilai di bawah sudah sesuai, tidak perlu diubah.
+// HOSTING: ganti dengan host/db/user/password MySQL dari hosting (sama seperti admin.php di hosting).
+$host        = '127.0.0.1';          // hosting contoh: sql123.infinityfree.com
+$dbname      = 'movie_review_db';    // hosting contoh: if0_12345678_movie_review_db
+$username_db = 'root';                // hosting contoh: if0_12345678
+$password_db = '';                    // Laragon default kosong
+$DEBUG       = false;                // ubah ke true sementara untuk melihat pesan error asli
+// =====================================================
+
+if ($DEBUG) { error_reporting(E_ALL); ini_set('display_errors', 1); }
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username_db, $password_db);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 } catch(PDOException $e) {
-    header("Location: bergabung_sekarang.php?error=Koneksi database gagal");
+    $msg = $DEBUG ? "Koneksi database gagal: " . $e->getMessage() : "Koneksi database gagal";
+    header("Location: bergabung_sekarang.php?error=" . urlencode($msg));
     exit();
 }
 
@@ -62,7 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit();
 
     } catch(PDOException $e) {
-        header("Location: bergabung_sekarang.php?error=Gagal mendaftar: " . $e->getMessage());
+        header("Location: bergabung_sekarang.php?error=" . urlencode($DEBUG ? "Gagal mendaftar: " . $e->getMessage() : "Gagal mendaftar, coba lagi"));
         exit();
     }
 } else {
