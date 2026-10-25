@@ -1,0 +1,19 @@
+[2025-11-16 21:53:56] === NEW REQUEST ===
+[2025-11-16 21:53:56] Request Method | Data: "POST"
+[2025-11-16 21:53:56] Content Type | Data: "application\/json"
+[2025-11-16 21:53:56] Raw Input | Data: "{\"movie_title\":\"Sore\",\"rating\":5,\"review_text\":\"1\",\"user_name\":\"Pengguna CineScope Baru\"}"
+[2025-11-16 21:53:56] Parsed Input | Data: {"movie_title":"Sore","rating":5,"review_text":"1","user_name":"Pengguna CineScope Baru"}
+[2025-11-16 21:53:56] Extracted Data | Data: {"movie_title":"Sore","rating":5,"review_text":"1","user_name":"Pengguna CineScope Baru"}
+[2025-11-16 21:53:56] Connecting to database | Data: {"host":"127.0.0.1","dbname":"movie_review_db"}
+[2025-11-16 21:53:56] Database connected
+[2025-11-16 21:53:56] Searching for movie | Data: "Sore"
+[2025-11-16 21:53:56] Movie found | Data: {"id":1,"title":"Sore"}
+[2025-11-16 21:53:56] Searching for user | Data: "Pengguna CineScope Baru"
+[2025-11-16 21:53:56] User found | Data: {"id":10}
+[2025-11-16 21:53:56] Inserting review
+[2025-11-16 21:53:56] Database Exception | Data: {"success":false,"message":"Database error: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry '10-1' for key 'unique_user_movie'","code":"23000","file":"submit_review.php","line":172}
+[2025-11-16 21:54:49] === NEW REQUEST ===
+[2025-11-16 21:54:49] Request Method | Data: "GET"
+[2025-11-16 21:54:49] Content Type | Data: "not set"
+[2025-11-16 21:54:49] Raw Input
+[2025-11-16 21:54:49] JSON Parse Error | Data: {"success":false,"message":"Invalid JSON: Syntax error","raw_input":""}

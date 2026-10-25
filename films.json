@@ -1,0 +1,38 @@
+[
+    {
+        "title": "123",
+        "year": "2021",
+        "genre": "horor",
+        "director": "fernando",
+        "synopsis": "hahhhh",
+        "poster": "uploads\/posters\/WhatsApp_Image_2025-11-04_at_19.35.05_a909b587.jpg",
+        "video": "uploads\/videos\/RANGGA_CINTA___OFFICIALTRAILER.mp4"
+    },
+    {
+        "title": "tesya",
+        "year": "2023",
+        "genre": "horor",
+        "director": "fernando",
+        "synopsis": "hahaha",
+        "poster": "uploads\/posters\/WhatsApp_Image_2025-11-04_at_19.35.05_a909b587.jpg",
+        "video": "uploads\/videos\/RANGGA_CINTA___OFFICIALTRAILER.mp4"
+    },
+    {
+        "title": "tes",
+        "year": "2011",
+        "genre": "acting",
+        "director": "fernando",
+        "synopsis": "yyy",
+        "poster": "uploads\/posters\/1944250.png",
+        "video": "uploads\/videos\/Rest_Area_-_Official_Trailer.mp4"
+    },
+    {
+        "title": "oooo",
+        "year": "2000",
+        "genre": "horor",
+        "director": "fernando",
+        "synopsis": "123456",
+        "poster": "uploads\/posters\/WhatsApp_Image_2025-11-04_at_19.35.05_1af72259.jpg",
+        "video": "uploads\/videos\/RANGGA_CINTA___OFFICIALTRAILER.mp4"
+    }
+]

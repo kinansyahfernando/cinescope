@@ -1,0 +1,178 @@
+{
+  "info": {
+    "name": "Movie Review API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost/movie-review/api"
+    },
+    {
+      "key": "token",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"testuser\",\n  \"email\": \"test@example.com\",\n  \"password\": \"password123\",\n  \"full_name\": \"Test User\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/register.php",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "register.php"]
+            }
+          }
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"password\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/login.php",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "login.php"]
+            }
+          }
+        },
+        {
+          "name": "Get Profile",
+          "request": {
+            "method": "GET",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {
+              "raw": "{{base_url}}/auth/profile.php",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "profile.php"]
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{token}}"}],
+            "url": {
+              "raw": "{{base_url}}/auth/logout.php",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "logout.php"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Movies",
+      "item": [
+        {
+          "name": "Get All Movies",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/movies/get_all.php?page=1&limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["movies", "get_all.php"],
+              "query": [
+                {"key": "page", "value": "1"},
+                {"key": "limit", "value": "10"}
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Movie Detail",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/movies/get_detail.php?id=1",
+              "host": ["{{base_url}}"],
+              "path": ["movies", "get_detail.php"],
+              "query": [{"key": "id", "value": "1"}]
+            }
+          }
+        },
+        {
+          "name": "Search Movies",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/movies/search.php?q=inception",
+              "host": ["{{base_url}}"],
+              "path": ["movies", "search.php"],
+              "query": [{"key": "q", "value": "inception"}]
+            }
+          }
+        },
+        {
+          "name": "Create Movie",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Authorization", "value": "Bearer {{token}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"New Movie\",\n  \"release_year\": 2024,\n  \"genre\": \"Action\",\n  \"director\": \"John Doe\",\n  \"synopsis\": \"An amazing new movie\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/movies/create.php",
+              "host": ["{{base_url}}"],
+              "path": ["movies", "create.php"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Reviews",
+      "item": [
+        {
+          "name": "Get Reviews by Movie",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/reviews/get_by_movie.php?movie_id=1",
+              "host": ["{{base_url}}"],
+              "path": ["reviews", "get_by_movie.php"],
+              "query": [{"key": "movie_id", "value": "1"}]
+            }
+          }
+        },
+        {
+          "name": "Create Review",
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Authorization", "value": "Bearer {{token}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"movie_id\": 1,\n  \"rating\": 9.5,\n  \"review_text\": \"Excellent movie!\",\n  \"is_spoiler\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/reviews/create.php",
+              "host": ["{{base_url}}"],
+              "path": ["reviews", "create.php"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

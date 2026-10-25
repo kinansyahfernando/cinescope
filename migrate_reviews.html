@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Migrate Reviews - Movie Review</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #667eea;
+            font-size: 2.5em;
+            margin-bottom: 15px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        .warning-box {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        .success-box {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        .btn {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            margin: 10px 5px;
+            transition: all 0.3s;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .btn-danger {
+            background: linear-gradient(135deg, #dc3545, #c82333);
+        }
+        .result-box {
+            background: #f8f9fa;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .review-item {
+            background: white;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 6px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+        .review-title {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        .review-meta {
+            color: #666;
+            font-size: 0.9em;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #e0e0e0;
+            border-radius: 15px;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        .stat-number {
+            font-size: 2.5em;
+            font-weight: bold;
+        }
+        .stat-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔄 Migrasi Review ke Database</h1>
+        <p class="subtitle">Transfer semua review dari localStorage browser ke database MySQL</p>
+        
+        <div class="info-box">
+            <strong>📋 Cara Kerja:</strong><br>
+            1. Script akan scan semua review di localStorage<br>
+            2. Otomatis membuat user jika belum ada<br>
+            3. Insert review ke table reviews<br>
+            4. Update average rating film<br>
+            5. Review akan muncul di admin panel!
+        </div>
+        
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-number" id="totalReviews">0</div>
+                <div class="stat-label">Total Review</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="successCount">0</div>
+                <div class="stat-label">Berhasil</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="failedCount">0</div>
+                <div class="stat-label">Gagal</div>
+            </div>
+        </div>
+        
+        <div style="text-align: center; margin: 30px 0;">
+            <button class="btn" onclick="scanReviews()" id="btnScan">
+                🔍 1. Scan Review di localStorage
+            </button>
+            <button class="btn" onclick="startMigration()" id="btnMigrate" disabled>
+                📤 2. Mulai Migrasi ke Database
+            </button>
+            <button class="btn btn-danger" onclick="clearLocal()" id="btnClear">
+                🗑️ Hapus localStorage
+            </button>
+        </div>
+        
+        <div class="progress-bar" id="progressBar" style="display:none;">
+            <div class="progress-fill" id="progressFill" style="width:0%;">0%</div>
+        </div>
+        
+        <div class="result-box" id="resultBox">
+            <p style="color:#999; text-align:center;">Klik tombol "Scan Review" untuk mulai...</p>
+        </div>
+        
+        <div style="text-align: center; margin-top: 30px;">
+            <a href="admin.php?action=reviews" class="btn" style="text-decoration:none;">
+                📊 Lihat Review di Admin Panel
+            </a>
+            <a href="user.html" class="btn" style="text-decoration:none;">
+                🏠 Kembali ke Website
+            </a>
+        </div>
+    </div>
+    
+    <script>
+        let reviewsToMigrate = [];
+        
+        // Mapping movie title ke movie_id di database
+        const movieMapping = {
+            'Sore': 1,
+            'Petaka Gunung Gede': 2,
+            'Dilan 1990': 3,
+            'Rest Area': 4,
+            'Tukar Takdir': 5,
+            'Rangga & Cinta': 6
+        };
+        
+        function scanReviews() {
+            reviewsToMigrate = [];
+            const resultBox = document.getElementById('resultBox');
+            resultBox.innerHTML = '<h3>📊 Hasil Scan:</h3>';
+            
+            // Keys yang menyimpan reviews
+            const reviewConfigs = [
+                { key: 'soreReviews', movie: 'Sore' },
+                { key: 'petakaGunungGedeReviews', movie: 'Petaka Gunung Gede' },
+                { key: 'dilan1990Reviews', movie: 'Dilan 1990' },
+                { key: 'restAreaReviews', movie: 'Rest Area' },
+                { key: 'tukarTakdirReviews', movie: 'Tukar Takdir' },
+                { key: 'ranggaCintaReviews', movie: 'Rangga & Cinta' }
+            ];
+            
+            let totalFound = 0;
+            
+            reviewConfigs.forEach(config => {
+                const data = localStorage.getItem(config.key);
+                if (data) {
+                    try {
+                        const reviews = JSON.parse(data);
+                        const movieId = movieMapping[config.movie];
+                        
+                        if (Array.isArray(reviews) && reviews.length > 0) {
+                            resultBox.innerHTML += `
+                                <div class="review-item">
+                                    <div class="review-title">🎬 ${config.movie}</div>
+                                    <div class="review-meta">
+                                        Found: <strong>${reviews.length} reviews</strong> | 
+                                        Movie ID: ${movieId}
+                                    </div>
+                                </div>
+                            `;
+                            
+                            reviews.forEach(review => {
+                                reviewsToMigrate.push({
+                                    movie_id: movieId,
+                                    movie_title: config.movie,
+                                    username: review.username || review.user || review.name || 'Anonymous',
+                                    rating: review.rating || 8.0,
+                                    review_text: review.review || review.text || review.comment || 'Review dari ' + config.movie,
+                                    is_spoiler: review.spoiler || review.isSpoiler || false
+                                });
+                            });
+                            
+                            totalFound += reviews.length;
+                        }
+                    } catch (e) {
+                        console.warn('Error parsing:', config.key, e);
+                    }
+                }
+            });
+            
+            document.getElementById('totalReviews').textContent = totalFound;
+            
+            if (totalFound > 0) {
+                resultBox.innerHTML += `
+                    <div class="success-box">
+                        ✅ Ditemukan <strong>${totalFound} review</strong> siap untuk dimigrasi!
+                    </div>
+                `;
+                document.getElementById('btnMigrate').disabled = false;
+            } else {
+                resultBox.innerHTML += `
+                    <div class="warning-box">
+                        ⚠️ Tidak ada review ditemukan di localStorage!<br>
+                        Pastikan Anda sudah membuat review di halaman film.
+                    </div>
+                `;
+            }
+        }
+        
+        async function startMigration() {
+            if (reviewsToMigrate.length === 0) {
+                alert('Tidak ada review untuk dimigrasi!');
+                return;
+            }
+            
+            const btnMigrate = document.getElementById('btnMigrate');
+            const btnScan = document.getElementById('btnScan');
+            const progressBar = document.getElementById('progressBar');
+            const progressFill = document.getElementById('progressFill');
+            const resultBox = document.getElementById('resultBox');
+            
+            btnMigrate.disabled = true;
+            btnScan.disabled = true;
+            progressBar.style.display = 'block';
+            
+            resultBox.innerHTML = '<h3>📤 Proses Migrasi:</h3>';
+            
+            let success = 0;
+            let failed = 0;
+            const total = reviewsToMigrate.length;
+            
+            for (let i = 0; i < reviewsToMigrate.length; i++) {
+                const review = reviewsToMigrate[i];
+                
+                try {
+                    const formData = new FormData();
+                    formData.append('movie_id', review.movie_id);
+                    formData.append('username', review.username);
+                    formData.append('rating', review.rating);
+                    formData.append('review_text', review.review_text);
+                    formData.append('is_spoiler', review.is_spoiler ? '1' : '0');
+                    
+                    const response = await fetch('migrate_review_handler.php', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        success++;
+                        resultBox.innerHTML += `
+                            <div class="review-item" style="border-left-color: #28a745;">
+                                ✅ ${review.movie_title} - ${review.username} (⭐ ${review.rating})
+                            </div>
+                        `;
+                    } else {
+                        failed++;
+                        resultBox.innerHTML += `
+                            <div class="review-item" style="border-left-color: #dc3545;">
+                                ❌ ${review.movie_title} - ${review.username}: ${result.message}
+                            </div>
+                        `;
+                    }
+                } catch (error) {
+                    failed++;
+                    resultBox.innerHTML += `
+                        <div class="review-item" style="border-left-color: #dc3545;">
+                            ❌ ${review.movie_title} - ${review.username}: ${error.message}
+                        </div>
+                    `;
+                }
+                
+                // Update progress
+                const progress = Math.round(((i + 1) / total) * 100);
+                progressFill.style.width = progress + '%';
+                progressFill.textContent = progress + '%';
+                
+                document.getElementById('successCount').textContent = success;
+                document.getElementById('failedCount').textContent = failed;
+                
+                // Scroll to bottom
+                resultBox.scrollTop = resultBox.scrollHeight;
+                
+                // Small delay to avoid overwhelming the server
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+            
+            resultBox.innerHTML += `
+                <div class="success-box">
+                    <strong>🎉 Migrasi Selesai!</strong><br>
+                    ✅ Berhasil: ${success}<br>
+                    ❌ Gagal: ${failed}<br><br>
+                    <a href="admin.php?action=reviews" style="color:#667eea; font-weight:bold;">
+                        📊 Lihat Review di Admin Panel →
+                    </a>
+                </div>
+            `;
+            
+            progressBar.style.display = 'none';
+            btnScan.disabled = false;
+        }
+        
+        function clearLocal() {
+            if (confirm('⚠️ Yakin ingin menghapus semua review di localStorage?\n\nData akan hilang permanen!')) {
+                const keys = [
+                    'soreReviews',
+                    'petakaGunungGedeReviews',
+                    'dilan1990Reviews',
+                    'restAreaReviews',
+                    'tukarTakdirReviews',
+                    'ranggaCintaReviews'
+                ];
+                
+                keys.forEach(key => localStorage.removeItem(key));
+                
+                document.getElementById('resultBox').innerHTML = `
+                    <div class="warning-box">
+                        🗑️ localStorage telah dibersihkan!<br>
+                        Semua review telah dihapus dari browser.
+                    </div>
+                `;
+                
+                document.getElementById('totalReviews').textContent = '0';
+                reviewsToMigrate = [];
+                document.getElementById('btnMigrate').disabled = true;
+            }
+        }
+        
+        // Auto scan on load
+        window.onload = scanReviews;
+    </script>
+</body>
+</html>

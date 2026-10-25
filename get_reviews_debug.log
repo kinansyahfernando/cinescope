@@ -1,0 +1,21 @@
+2025-11-17 17:43:38 - GET Reviews request
+Database connected
+Movie ID: 3
+Movie found: Dilan 1990
+Reviews found: 4
+Response: {"success":true,"movie_title":"Dilan 1990","average_rating":"6.1","total_reviews":4,"reviews":[{"id":29,"rating":"5.0","review_text":"Test review dari test_review.html","created_at":"17 Nov 2025, 23:28","username":"Test User","full_name":"Test User"},{"id":26,"rating":"5.0","review_text":"Test review dari test_review.html","created_at":"17 Nov 2025, 04:05","username":"Test User","full_name":"Test User"},{"id":15,"rating":"5.0","review_text":"oba","created_at":"17 Nov 2025, 00:49","username":"Pengguna CineScope Baru","full_name":"Pengguna CineScope Baru"},{"id":3,"rating":"9.5","review_text":"Masterpiece! Dilan memang legenda.","created_at":"16 Nov 2025, 23:37","username":"admin","full_name":"Administrator"}]}
+
+2025-11-17 17:54:57 - GET Reviews request
+Database connected
+Movie ID: 3
+Movie found: Dilan 1990
+Reviews found: 3
+Response: {"success":true,"movie_title":"Dilan 1990","average_rating":"5.0","total_reviews":3,"reviews":[{"id":29,"rating":"5.0","review_text":"Test review dari test_review.html","created_at":"17 Nov 2025, 23:28","username":"Test User","full_name":"Test User"},{"id":26,"rating":"5.0","review_text":"Test review dari test_review.html","created_at":"17 Nov 2025, 04:05","username":"Test User","full_name":"Test User"},{"id":15,"rating":"5.0","review_text":"oba","created_at":"17 Nov 2025, 00:49","username":"Pengguna CineScope Baru","full_name":"Pengguna CineScope Baru"}]}
+
+2025-11-17 18:09:32 - GET Reviews request
+Database connected
+Movie ID: 3
+Movie found: Dilan 1990
+Reviews found: 3
+Response: {"success":true,"movie_title":"Dilan 1990","average_rating":"5.0","total_reviews":3,"reviews":[{"id":29,"rating":"5.0","review_text":"Test review dari test_review.html","created_at":"17 Nov 2025, 23:28","username":"Test User","full_name":"Test User"},{"id":26,"rating":"5.0","review_text":"Test review dari test_review.html","created_at":"17 Nov 2025, 04:05","username":"Test User","full_name":"Test User"},{"id":15,"rating":"5.0","review_text":"oba","created_at":"17 Nov 2025, 00:49","username":"Pengguna CineScope Baru","full_name":"Pengguna CineScope Baru"}]}
+

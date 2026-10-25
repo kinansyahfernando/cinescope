@@ -1,0 +1,43 @@
+[2025-11-16 22:04:18] === NEW REQUEST START ===
+[2025-11-16 22:04:18] Method: GET
+[2025-11-16 22:05:51] === NEW REQUEST START ===
+[2025-11-16 22:05:51] Method: POST
+[2025-11-16 22:05:51] Raw Input: {"movie_title":"Dilan 1990","rating":5,"review_text":"Test review dari test_review.html","user_name":"Test User"}
+[2025-11-16 22:05:51] Movie: Dilan 1990 | Rating: 5 | User: Test User
+[2025-11-16 22:05:51] Database connected
+[2025-11-16 22:05:51] Movie found: ID=3, Title=Dilan 1990
+[2025-11-16 22:05:51] Creating new user: Test User
+[2025-11-16 22:05:51] User created: ID=16
+[2025-11-16 22:05:51] Inserting review...
+[2025-11-16 22:05:51] Review inserted: ID=26
+[2025-11-16 22:05:51] Average rating updated
+[2025-11-16 22:05:51] SUCCESS: Review ID=26
+[2025-11-16 22:05:51] {"success":true,"message":"\u2705 Review berhasil disimpan ke database!","data":{"review_id":"26","movie_id":3,"movie_title":"Dilan 1990","user_id":"16","user_name":"Test User","rating":5,"new_avg_rating":6.5}}
+[2025-11-16 22:05:51] === REQUEST END ===
+
+[2025-11-16 22:16:36] === NEW REQUEST START ===
+[2025-11-16 22:16:36] Method: GET
+[2025-11-17 10:02:40] === NEW REQUEST START ===
+[2025-11-17 10:02:40] Method: GET
+[2025-11-17 10:26:24] === NEW REQUEST START ===
+[2025-11-17 10:26:24] Method: POST
+[2025-11-17 10:26:24] Raw Input: {"movie_title":"Dilan 1990","rating":5,"review_text":"Test review dari test_review.html","user_name":"Test User"}
+[2025-11-17 10:26:24] Movie: Dilan 1990 | Rating: 5 | User: Test User
+[2025-11-17 10:26:24] Database connected
+[2025-11-17 10:26:24] Movie found: ID=3, Title=Dilan 1990
+[2025-11-17 10:26:24] User found: ID=16
+[2025-11-17 10:26:24] Inserting review...
+[2025-11-17 10:26:24] DB Error: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry '16-3' for key 'unique_user_movie'
+[2025-11-17 10:26:24] === REQUEST END ===
+
+[2025-11-17 10:27:17] === NEW REQUEST START ===
+[2025-11-17 10:27:17] Method: POST
+[2025-11-17 10:27:17] Raw Input: {"movie_title":"Dilan 1990","rating":5,"review_text":"Test review dari test_review.html","user_name":"Test User"}
+[2025-11-17 10:27:17] Movie: Dilan 1990 | Rating: 5 | User: Test User
+[2025-11-17 10:27:17] Database connected
+[2025-11-17 10:27:17] Movie found: ID=3, Title=Dilan 1990
+[2025-11-17 10:27:17] User found: ID=16
+[2025-11-17 10:27:17] Inserting review...
+[2025-11-17 10:27:17] DB Error: SQLSTATE[23000]: Integrity constraint violation: 1062 Duplicate entry '16-3' for key 'unique_user_movie'
+[2025-11-17 10:27:17] === REQUEST END ===
+

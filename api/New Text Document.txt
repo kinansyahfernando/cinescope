@@ -1,0 +1,56 @@
+<?php
+header('Content-Type: application/json');
+
+// Pastikan metode POST
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    echo json_encode(['success' => false, 'message' => 'Metode request tidak valid']);
+    exit;
+}
+
+// Ambil judul
+$title = $_POST['title'] ?? '';
+if(empty($title)){
+    echo json_encode(['success' => false, 'message' => 'Judul film wajib diisi']);
+    exit;
+}
+
+// Upload Poster
+if(!isset($_FILES['poster'])){
+    echo json_encode(['success' => false, 'message' => 'Poster tidak ditemukan']);
+    exit;
+}
+$poster = $_FILES['poster'];
+$posterPath = '../uploads/posters/' . basename($poster['name']);
+if(!move_uploaded_file($poster['tmp_name'], $posterPath)){
+    echo json_encode(['success' => false, 'message' => 'Gagal mengupload poster']);
+    exit;
+}
+
+// Upload Video
+if(!isset($_FILES['video'])){
+    echo json_encode(['success' => false, 'message' => 'File film tidak ditemukan']);
+    exit;
+}
+$video = $_FILES['video'];
+$videoPath = '../uploads/videos/' . basename($video['name']);
+if(!move_uploaded_file($video['tmp_name'], $videoPath)){
+    echo json_encode(['success' => false, 'message' => 'Gagal mengupload film']);
+    exit;
+}
+
+// Simpan ke database (opsional)
+// $conn = new mysqli('localhost','root','','movie_review');
+// $stmt = $conn->prepare("INSERT INTO films (title, poster, video) VALUES (?, ?, ?)");
+// $stmt->bind_param('sss', $title, $posterPath, $videoPath);
+// $stmt->execute();
+
+echo json_encode([
+    'success' => true,
+    'message' => 'Film berhasil diupload!',
+    'data' => [
+        'title' => $title,
+        'poster' => $posterPath,
+        'video' => $videoPath
+    ]
+]);
+?>
