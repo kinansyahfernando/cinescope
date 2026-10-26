@@ -1,1407 +1,468 @@
 <?php
-// File: admin.php (FIXED VERSION - Sync Rating System)
+// admin.php - versi lokal Laragon (PHP 8.4)
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
 
-// Database Configuration
-$host = '127.0.0.1';
-$dbname = 'movie_review_db';
+$host     = '127.0.0.1';   // atau 'localhost'
+$dbname   = 'cinescope';   // nama database di Laragon
 $username = 'root';
-$password = '';
+$password = '';            // default Laragon kosong
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
 } catch(PDOException $e) {
-    die("❌ Database Connection Error: " . $e->getMessage());
+    die("Database Error: " . $e->getMessage());
 }
 
-// ==================== AUTO MIGRATION: kolom status & release_date ====================
-// status: 'released' = Daftar Film, 'coming_soon' = Coming Soon
+// Auto migration
 try {
     $cols = $pdo->query("SHOW COLUMNS FROM movies")->fetchAll(PDO::FETCH_COLUMN);
-    if (!in_array('status', $cols)) {
-        $pdo->exec("ALTER TABLE movies ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'released'");
-    }
-    if (!in_array('release_date', $cols)) {
-        $pdo->exec("ALTER TABLE movies ADD COLUMN release_date DATE NULL");
-    }
-    // released_at = waktu film masuk ke Daftar Film (film terbaru tampil paling depan)
-    if (!in_array('released_at', $cols)) {
-        $pdo->exec("ALTER TABLE movies ADD COLUMN released_at DATETIME NULL");
-        $pdo->exec("UPDATE movies SET released_at = COALESCE(created_at, NOW()) WHERE released_at IS NULL AND status = 'released'");
-    }
-} catch (PDOException $e) {
-    die("❌ Migration Error: " . $e->getMessage());
-}
+    if (!in_array('status', $cols)) $pdo->exec("ALTER TABLE movies ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'released'");
+    if (!in_array('release_date', $cols)) $pdo->exec("ALTER TABLE movies ADD COLUMN release_date DATE NULL");
+    if (!in_array('average_rating', $cols)) $pdo->exec("ALTER TABLE movies ADD COLUMN average_rating DECIMAL(3,1) DEFAULT 0");
+    if (!in_array('cast', $cols)) $pdo->exec("ALTER TABLE movies ADD COLUMN `cast` VARCHAR(255) NULL");
+    
+    $rcols = $pdo->query("SHOW COLUMNS FROM reviews")->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('user_name', $rcols)) $pdo->exec("ALTER TABLE reviews ADD COLUMN user_name VARCHAR(100) NULL");
+    if (!in_array('created_at', $rcols)) $pdo->exec("ALTER TABLE reviews ADD COLUMN created_at DATETIME NULL");
+    if (!in_array('updated_at', $rcols)) $pdo->exec("ALTER TABLE reviews ADD COLUMN updated_at DATETIME NULL");
+} catch (PDOException $e) {}
 
-function normalizeStatus($s) {
-    return $s === 'coming_soon' ? 'coming_soon' : 'released';
-}
-
-// Create upload folders if not exist
-$uploadDirs = ['uploads', 'uploads/posters', 'uploads/videos'];
-foreach ($uploadDirs as $dir) {
-    if (!file_exists($dir)) mkdir($dir, 0777, true);
+foreach (['uploads', 'uploads/posters', 'uploads/videos'] as $dir) {
+    if (!file_exists($dir)) @mkdir($dir, 0777, true);
 }
 
 $message = '';
 $messageType = '';
 $action = $_GET['action'] ?? 'dashboard';
 
-// =======================
-// 🔥 UNIVERSAL SYNC SYSTEM (FIXED)
-// =======================
-
-function getBaseMovieTitle($title) {
-    $baseTitle = preg_replace('/\s*\d{4}\s*/', ' ', $title);
-    $baseTitle = preg_split('/[:\-–—]/', $baseTitle)[0];
-    $baseTitle = preg_replace('/\s*(part|bagian|episode|ep)?\s*\d+\s*$/i', '', $baseTitle);
-    $baseTitle = trim($baseTitle);
-    return strtolower($baseTitle);
-}
-
-function syncAllSeriesMovies(PDO $pdo, int $movieId, string $title, string $posterPath) {
-    $baseTitle = getBaseMovieTitle($title);
-    
-    $stmt = $pdo->prepare("SELECT * FROM movies WHERE id = ?");
-    $stmt->execute([$movieId]);
-    $sourceMovie = $stmt->fetch(PDO::FETCH_ASSOC);
-    
-    if (!$sourceMovie) return ['success' => false, 'count' => 0];
-    
-    // Cari semua film dengan nama serupa
-    $findStmt = $pdo->query("SELECT id, title FROM movies");
-    $allMovies = $findStmt->fetchAll(PDO::FETCH_ASSOC);
-    
-    $syncedCount = 0;
-    foreach ($allMovies as $movie) {
-        if ($movie['id'] == $movieId) continue;
-        
-        $otherBaseTitle = getBaseMovieTitle($movie['title']);
-        
-        if ($baseTitle === $otherBaseTitle) {
-            $updateStmt = $pdo->prepare("
-                UPDATE movies SET 
-                    poster = :poster,
-                    release_year = :release_year,
-                    duration = :duration,
-                    genre = :genre,
-                    director = :director,
-                    synopsis = :synopsis,
-                    trailer_url = :trailer_url,
-                    updated_at = NOW()
-                WHERE id = :id
-            ");
-            
-            $updateStmt->execute([
-                ':poster' => $posterPath,
-                ':release_year' => $sourceMovie['release_year'],
-                ':duration' => $sourceMovie['duration'],
-                ':genre' => $sourceMovie['genre'],
-                ':director' => $sourceMovie['director'],
-                ':synopsis' => $sourceMovie['synopsis'],
-                ':trailer_url' => $sourceMovie['trailer_url'],
-                ':id' => $movie['id']
-            ]);
-            
-            $syncedCount++;
-        }
-    }
-    
-    return ['success' => true, 'count' => $syncedCount];
-}
-
-// ==================== HELPER FUNCTIONS ====================
+function normalizeStatus($s) { return $s === 'coming_soon' ? 'coming_soon' : 'released'; }
 
 function updateMovieAverageRating(PDO $pdo, int $movieId) {
     if ($movieId <= 0) return;
-
-    $sql = "UPDATE movies m 
-            SET m.average_rating = (
-                SELECT COALESCE(AVG(r.rating), 0)
-                FROM reviews r 
-                WHERE r.movie_id = ?
-            )
-            WHERE m.id = ?";
-    
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([$movieId, $movieId]);
+    try {
+        $stmt = $pdo->prepare("UPDATE movies SET average_rating = (SELECT COALESCE(AVG(rating),0) FROM reviews WHERE movie_id = ?) WHERE id = ?");
+        $stmt->execute([$movieId, $movieId]);
+    } catch (PDOException $e) {}
 }
 
-// ==================== PROCESS ACTIONS ====================
-
-// CREATE REVIEW
+// ============ CREATE REVIEW ============
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
     try {
-        $movie_id = isset($_POST['movie_id']) ? intval($_POST['movie_id']) : 0;
-        $user_id = isset($_POST['user_id']) ? intval($_POST['user_id']) : 0;
-        $rating = isset($_POST['rating']) ? intval($_POST['rating']) : 0;
-        $review_text = isset($_POST['review_text']) ? trim($_POST['review_text']) : '';
-        
-        if ($movie_id <= 0) throw new Exception("❌ Film harus dipilih!");
-        if ($user_id <= 0) throw new Exception("❌ User harus dipilih!");
-        if ($rating < 1 || $rating > 5) throw new Exception("❌ Rating harus 1-5!");
-        
-        $stmtCheckMovie = $pdo->prepare("SELECT id, title FROM movies WHERE id = ?");
-        $stmtCheckMovie->execute([$movie_id]);
-        $movieData = $stmtCheckMovie->fetch(PDO::FETCH_ASSOC);
-        if (!$movieData) throw new Exception("❌ Film tidak ditemukan!");
-        
-        $stmtCheckUser = $pdo->prepare("SELECT id, username, full_name FROM users WHERE id = ?");
-        $stmtCheckUser->execute([$user_id]);
-        $userData = $stmtCheckUser->fetch(PDO::FETCH_ASSOC);
-        if (!$userData) throw new Exception("❌ User tidak ditemukan!");
-        
-        $stmtCheckExisting = $pdo->prepare("SELECT id FROM reviews WHERE user_id = ? AND movie_id = ?");
-        $stmtCheckExisting->execute([$user_id, $movie_id]);
-        if ($stmtCheckExisting->fetch()) throw new Exception("⚠️ User ini sudah memberikan review untuk film ini!");
-        
+        $movie_id = (int)($_POST['movie_id'] ?? 0);
+        $user_id  = (int)($_POST['user_id'] ?? 0);
+        $rating   = (float)($_POST['rating'] ?? 0);
+        $review_text = trim($_POST['review_text'] ?? '');
+
+        if ($movie_id <= 0) throw new Exception("Film harus dipilih!");
+        if ($user_id <= 0)  throw new Exception("User harus dipilih!");
+        if ($rating < 1 || $rating > 5) throw new Exception("Rating harus 1-5!");
+
+        $s = $pdo->prepare("SELECT id, title FROM movies WHERE id = ?");
+        $s->execute([$movie_id]);
+        $movieData = $s->fetch(PDO::FETCH_ASSOC);
+        if (!$movieData) throw new Exception("Film tidak ditemukan!");
+
+        $s = $pdo->prepare("SELECT id, username, full_name FROM users WHERE id = ?");
+        $s->execute([$user_id]);
+        $userData = $s->fetch(PDO::FETCH_ASSOC);
+        if (!$userData) throw new Exception("User tidak ditemukan!");
+
         $userName = !empty($userData['full_name']) ? $userData['full_name'] : $userData['username'];
-        $reviewText = !empty($review_text) ? $review_text : null;
-        
-        $pdo->beginTransaction();
-        
-        $sqlInsert = "INSERT INTO reviews (movie_id, user_id, rating, review_text, user_name, created_at, updated_at) 
-                      VALUES (?, ?, ?, ?, ?, NOW(), NOW())";
-        
-        $stmtInsert = $pdo->prepare($sqlInsert);
-        if (!$stmtInsert->execute([$movie_id, $user_id, $rating, $reviewText, $userName])) {
-            throw new Exception("❌ Failed to insert review!");
-        }
-        
-        $pdo->commit();
+        $reviewTextVal = !empty($review_text) ? $review_text : null;
+
+        $ins = $pdo->prepare("INSERT INTO reviews (movie_id, user_id, rating, review_text, user_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())");
+        $ins->execute([$movie_id, $user_id, $rating, $reviewTextVal, $userName]);
+
         updateMovieAverageRating($pdo, $movie_id);
-        
-        $_SESSION['success_message'] = "✅ Review berhasil ditambahkan untuk film: " . htmlspecialchars($movieData['title']);
+        $_SESSION['success_message'] = "Review berhasil ditambahkan untuk: " . htmlspecialchars($movieData['title']);
         header("Location: admin.php?action=reviews");
         exit;
-
     } catch(Exception $e) {
-        if($pdo->inTransaction()) $pdo->rollBack();
         $message = $e->getMessage();
         $messageType = 'error';
     }
 }
 
-// CREATE MOVIE
+// ============ CREATE MOVIE ============
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_movie'])) {
     $posterPath = '';
-    
-    if (isset($_FILES['poster']) && $_FILES['poster']['error'] === UPLOAD_ERR_OK) {
+    if (!empty($_FILES['poster']['name']) && $_FILES['poster']['error'] === UPLOAD_ERR_OK) {
         $posterName = time() . '_' . basename($_FILES['poster']['name']);
         $posterTarget = 'uploads/posters/' . $posterName;
-        if (move_uploaded_file($_FILES['poster']['tmp_name'], $posterTarget)) {
-            $posterPath = $posterTarget;
-        }
+        if (move_uploaded_file($_FILES['poster']['tmp_name'], $posterTarget)) $posterPath = $posterTarget;
     }
-    
-    // TIDAK PERLU input average_rating manual - biarkan 0 dan akan diupdate otomatis dari reviews
     $status = normalizeStatus($_POST['status'] ?? 'released');
     $releaseDate = !empty($_POST['release_date']) ? $_POST['release_date'] : null;
 
-    $sql = "INSERT INTO movies (title, release_year, duration, genre, director, synopsis, poster, trailer_url, status, release_date, released_at, average_rating, created_at) 
-            VALUES (:title, :release_year, :duration, :genre, :director, :synopsis, :poster, :trailer_url, :status, :release_date, " . ($status === 'released' ? 'NOW()' : 'NULL') . ", 0, NOW())";
-    
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([
-        ':status' => $status,
-        ':release_date' => $releaseDate,
-        ':title' => $_POST['title'],
-        ':release_year' => $_POST['release_year'],
-        ':duration' => $_POST['duration'],
-        ':genre' => $_POST['genre'],
-        ':director' => $_POST['director'],
-        ':synopsis' => $_POST['synopsis'],
-        ':poster' => $posterPath,
-        ':trailer_url' => $_POST['trailer_url']
-    ]);
-    
-    header("Location: admin.php?action=movies&status=" . $status . "&msg=" . ($status === 'coming_soon' ? 'created_coming' : 'created'));
+    try {
+        $sql = "INSERT INTO movies (title, release_year, duration, genre, director, `cast`, synopsis, poster, trailer_url, status, release_date, average_rating, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW())";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            $_POST['title'], $_POST['release_year'], $_POST['duration'],
+            $_POST['genre'], $_POST['director'], $_POST['cast'] ?? '',
+            $_POST['synopsis'], $posterPath, $_POST['trailer_url'],
+            $status, $releaseDate
+        ]);
+    } catch (PDOException $e) {
+        $sql = "INSERT INTO movies (title, release_year, duration, genre, director, synopsis, poster, trailer_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([$_POST['title'], $_POST['release_year'], $_POST['duration'], $_POST['genre'], $_POST['director'], $_POST['synopsis'], $posterPath, $_POST['trailer_url']]);
+    }
+    header("Location: admin.php?action=movies&msg=created");
     exit;
 }
 
-// UPDATE MOVIE
+// ============ UPDATE MOVIE ============
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_movie'])) {
-    $movieId = $_POST['movie_id'];
-    $posterPath = $_POST['existing_poster'];
-    
-    if (isset($_FILES['poster']) && $_FILES['poster']['error'] === UPLOAD_ERR_OK) {
+    $movieId = (int)$_POST['movie_id'];
+    $posterPath = $_POST['existing_poster'] ?? '';
+
+    if (!empty($_FILES['poster']['name']) && $_FILES['poster']['error'] === UPLOAD_ERR_OK) {
         $posterName = time() . '_' . basename($_FILES['poster']['name']);
         $posterTarget = 'uploads/posters/' . $posterName;
-        if (move_uploaded_file($_FILES['poster']['tmp_name'], $posterTarget)) {
-            $posterPath = $posterTarget;
-            if (!empty($_POST['existing_poster']) && file_exists($_POST['existing_poster'])) {
-                unlink($_POST['existing_poster']);
-            }
-        }
+        if (move_uploaded_file($_FILES['poster']['tmp_name'], $posterTarget)) $posterPath = $posterTarget;
     }
-    
-    // UPDATE tanpa mengubah average_rating (diambil dari reviews)
-    $sql = "UPDATE movies SET 
-            title = :title,
-            release_year = :release_year,
-            duration = :duration,
-            genre = :genre,
-            director = :director,
-            synopsis = :synopsis,
-            poster = :poster,
-            trailer_url = :trailer_url,
-            released_at = IF(:status_new = 'released' AND status = 'coming_soon', NOW(), released_at),
-            status = :status,
-            release_date = :release_date,
-            updated_at = NOW()
-            WHERE id = :id";
-    
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute([
-        ':status_new' => normalizeStatus($_POST['status'] ?? 'released'),
-        ':status' => normalizeStatus($_POST['status'] ?? 'released'),
-        ':release_date' => !empty($_POST['release_date']) ? $_POST['release_date'] : null,
-        ':title' => $_POST['title'],
-        ':release_year' => $_POST['release_year'],
-        ':duration' => $_POST['duration'],
-        ':genre' => $_POST['genre'],
-        ':director' => $_POST['director'],
-        ':synopsis' => $_POST['synopsis'],
-        ':poster' => $posterPath,
-        ':trailer_url' => $_POST['trailer_url'],
-        ':id' => $movieId
-    ]);
-    
-    // Recalculate rating dari reviews
+
+    try {
+        $sql = "UPDATE movies SET title=?, release_year=?, duration=?, genre=?, director=?, `cast`=?, synopsis=?, poster=?, trailer_url=?, status=?, release_date=?, updated_at=NOW() WHERE id=?";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            $_POST['title'], $_POST['release_year'], $_POST['duration'],
+            $_POST['genre'], $_POST['director'], $_POST['cast'] ?? '',
+            $_POST['synopsis'], $posterPath, $_POST['trailer_url'],
+            normalizeStatus($_POST['status'] ?? 'released'),
+            !empty($_POST['release_date']) ? $_POST['release_date'] : null,
+            $movieId
+        ]);
+    } catch (PDOException $e) {
+        $sql = "UPDATE movies SET title=?, release_year=?, duration=?, genre=?, director=?, synopsis=?, poster=?, trailer_url=?, updated_at=NOW() WHERE id=?";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([$_POST['title'], $_POST['release_year'], $_POST['duration'], $_POST['genre'], $_POST['director'], $_POST['synopsis'], $posterPath, $_POST['trailer_url'], $movieId]);
+    }
+
     updateMovieAverageRating($pdo, $movieId);
-    
-    // Sync film dengan nama serupa
-    $syncResult = syncAllSeriesMovies($pdo, $movieId, $_POST['title'], $posterPath);
-    
-    $redirectMsg = 'updated';
-    if ($syncResult['success'] && $syncResult['count'] > 0) {
-        $redirectMsg = 'updated_synced&count=' . $syncResult['count'];
-    }
-    
-    header("Location: admin.php?action=movies&msg=" . $redirectMsg);
+    header("Location: admin.php?action=movies&msg=updated");
     exit;
 }
 
-// PINDAHKAN STATUS FILM (Coming Soon -> Daftar Film, atau sebaliknya)
+// ============ SET STATUS ============
 if (isset($_GET['set_status'], $_GET['id']) && is_numeric($_GET['id'])) {
-    $newStatus = normalizeStatus($_GET['set_status']);
-    $stmt = $pdo->prepare("UPDATE movies SET released_at = IF(:status_new = 'released', NOW(), released_at), status = :status, updated_at = NOW() WHERE id = :id");
-    $stmt->execute([':status_new' => $newStatus, ':status' => $newStatus, ':id' => (int)$_GET['id']]);
-
-    $back = $newStatus === 'released' ? 'coming_soon' : 'released';
-    header("Location: admin.php?action=movies&status=" . $back . "&msg=" . ($newStatus === 'released' ? 'moved_released' : 'moved_coming'));
+    try {
+        $stmt = $pdo->prepare("UPDATE movies SET status=? WHERE id=?");
+        $stmt->execute([normalizeStatus($_GET['set_status']), (int)$_GET['id']]);
+    } catch (PDOException $e) {}
+    header("Location: admin.php?action=movies&msg=updated");
     exit;
 }
 
-// DELETE MOVIE
+// ============ DELETE MOVIE ============
 if (isset($_GET['delete']) && is_numeric($_GET['delete'])) {
-    $movieId = (int)$_GET['delete'];
-    
-    $stmt = $pdo->prepare("SELECT poster FROM movies WHERE id = :id");
-    $stmt->execute([':id' => $movieId]);
-    $movie = $stmt->fetch();
-    
-    if ($movie && !empty($movie['poster']) && file_exists($movie['poster'])) {
-        unlink($movie['poster']);
-    }
-    
-    $stmt = $pdo->prepare("DELETE FROM movies WHERE id = :id");
-    $stmt->execute([':id' => $movieId]);
-    
-    header("Location: admin.php?action=movies&status=" . urlencode($_GET['status'] ?? 'all') . "&msg=deleted");
+    $pdo->prepare("DELETE FROM movies WHERE id=?")->execute([(int)$_GET['delete']]);
+    header("Location: admin.php?action=movies&msg=deleted");
     exit;
 }
 
-// DELETE REVIEW
+// ============ DELETE REVIEW ============
 if (isset($_GET['delete_review']) && is_numeric($_GET['delete_review'])) {
-    $reviewId = (int)$_GET['delete_review'];
-    
-    $stmt = $pdo->prepare("SELECT movie_id FROM reviews WHERE id = :id");
-    $stmt->execute([':id' => $reviewId]);
-    $review = $stmt->fetch();
-    $movieId = $review['movie_id'] ?? 0;
-
-    $stmt = $pdo->prepare("DELETE FROM reviews WHERE id = :id");
-    $stmt->execute([':id' => $reviewId]);
-
-    if ($movieId > 0) updateMovieAverageRating($pdo, $movieId);
-    
+    $s = $pdo->prepare("SELECT movie_id FROM reviews WHERE id=?");
+    $s->execute([(int)$_GET['delete_review']]);
+    $r = $s->fetch();
+    $pdo->prepare("DELETE FROM reviews WHERE id=?")->execute([(int)$_GET['delete_review']]);
+    if ($r) updateMovieAverageRating($pdo, (int)$r['movie_id']);
     header("Location: admin.php?action=reviews&msg=review_deleted");
     exit;
 }
 
-// Handle session message
 if (isset($_SESSION['success_message'])) {
     $message = $_SESSION['success_message'];
     $messageType = 'success';
     unset($_SESSION['success_message']);
 }
 
-// Handle messages from URL
 if (isset($_GET['msg'])) {
-    switch($_GET['msg']) {
-        case 'created': 
-            $message = "✅ Film berhasil ditambahkan!"; 
-            $messageType = 'success'; 
-            break;
-        case 'created_coming':
-            $message = "✅ Film berhasil ditambahkan ke <strong>Coming Soon</strong>!";
-            $messageType = 'success';
-            break;
-        case 'moved_released':
-            $message = "🎉 Film berhasil dipindahkan ke <strong>Daftar Film</strong> dan sekarang tampil di website!";
-            $messageType = 'success';
-            break;
-        case 'moved_coming':
-            $message = "✅ Film berhasil dikembalikan ke <strong>Coming Soon</strong>.";
-            $messageType = 'success';
-            break;
-        case 'updated': 
-            $message = "✅ Film berhasil diupdate!"; 
-            $messageType = 'success'; 
-            break;
-        case 'updated_synced':
-            $count = $_GET['count'] ?? 0;
-            $message = "✅ Film berhasil diupdate dan di-sync ke {$count} film series lainnya!"; 
-            $messageType = 'success'; 
-            break;
-        case 'deleted': 
-            $message = "✅ Film berhasil dihapus!"; 
-            $messageType = 'success'; 
-            break;
-        case 'review_deleted': 
-            $message = "✅ Review berhasil dihapus!"; 
-            $messageType = 'success'; 
-            break;
+    $msgs = [
+        'created' => 'Film berhasil ditambahkan!',
+        'updated' => 'Film berhasil diupdate!',
+        'deleted' => 'Film berhasil dihapus!',
+        'review_deleted' => 'Review berhasil dihapus!'
+    ];
+    if (isset($msgs[$_GET['msg']])) {
+        $message = $msgs[$_GET['msg']];
+        $messageType = 'success';
     }
 }
 
-// ==================== FETCH DATA (FIXED - Consistent Rating Calculation) ====================
-
-$moviesStmt = $pdo->query("SELECT m.*, 
-    (SELECT COUNT(*) FROM reviews WHERE movie_id = m.id) as review_count,
-    COALESCE((SELECT AVG(rating) FROM reviews WHERE movie_id = m.id), 0) as calc_avg_rating
-    FROM movies m ORDER BY m.id ASC");
-$movies = $moviesStmt->fetchAll();
-
-$reviewsStmt = $pdo->query("SELECT r.*, m.title as movie_title, u.username, u.full_name 
-    FROM reviews r 
-    LEFT JOIN movies m ON r.movie_id = m.id
-    LEFT JOIN users u ON r.user_id = u.id
-    ORDER BY r.created_at DESC LIMIT 100");
-$reviews = $reviewsStmt->fetchAll();
+// ============ FETCH DATA ============
+$movies = $pdo->query("SELECT m.*, (SELECT COUNT(*) FROM reviews WHERE movie_id = m.id) as review_count, COALESCE((SELECT AVG(rating) FROM reviews WHERE movie_id = m.id), 0) as calc_avg_rating FROM movies m ORDER BY m.id ASC")->fetchAll(PDO::FETCH_ASSOC);
+$reviews = $pdo->query("SELECT r.*, m.title as movie_title, u.username, u.full_name FROM reviews r LEFT JOIN movies m ON r.movie_id = m.id LEFT JOIN users u ON r.user_id = u.id ORDER BY r.created_at DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC);
 
 $statusFilter = $_GET['status'] ?? 'all';
 if (!in_array($statusFilter, ['all', 'released', 'coming_soon'])) $statusFilter = 'all';
 
-$countReleased = count(array_filter($movies, fn($m) => ($m['status'] ?? 'released') !== 'coming_soon'));
-$countComing   = count($movies) - $countReleased;
+$countReleased = 0;
+$countComing = 0;
+foreach ($movies as $m) {
+    if (($m['status'] ?? 'released') === 'coming_soon') $countComing++;
+    else $countReleased++;
+}
 
-$filteredMovies = array_values(array_filter($movies, function($m) use ($statusFilter) {
+$filteredMovies = [];
+foreach ($movies as $m) {
     $s = ($m['status'] ?? 'released') === 'coming_soon' ? 'coming_soon' : 'released';
-    return $statusFilter === 'all' || $s === $statusFilter;
-}));
+    if ($statusFilter === 'all' || $s === $statusFilter) $filteredMovies[] = $m;
+}
 
-$moviesListStmt = $pdo->query("SELECT id, title FROM movies ORDER BY title ASC");
-$moviesList = $moviesListStmt->fetchAll(PDO::FETCH_ASSOC);
-
-$usersListStmt = $pdo->query("SELECT id, username, full_name FROM users ORDER BY username ASC");
-$usersList = $usersListStmt->fetchAll(PDO::FETCH_ASSOC);
+$moviesList = $pdo->query("SELECT id, title FROM movies ORDER BY title ASC")->fetchAll(PDO::FETCH_ASSOC);
+$usersList = $pdo->query("SELECT id, username, full_name FROM users ORDER BY username ASC")->fetchAll(PDO::FETCH_ASSOC);
 
 $totalMovies = count($movies);
-$totalReviews = $pdo->query("SELECT COUNT(*) FROM reviews")->fetchColumn();
+$totalReviews = (int)$pdo->query("SELECT COUNT(*) FROM reviews")->fetchColumn();
 $avgRating = $pdo->query("SELECT AVG(average_rating) FROM movies WHERE average_rating > 0")->fetchColumn();
 
 $editMovie = null;
 if ($action === 'edit' && isset($_GET['id'])) {
-    $stmt = $pdo->prepare("SELECT * FROM movies WHERE id = :id");
-    $stmt->execute([':id' => $_GET['id']]);
-    $editMovie = $stmt->fetch();
+    $s = $pdo->prepare("SELECT * FROM movies WHERE id=?");
+    $s->execute([(int)$_GET['id']]);
+    $editMovie = $s->fetch(PDO::FETCH_ASSOC);
 }
 ?>
 <!DOCTYPE html>
 <html lang="id">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=1200, initial-scale=0.35, user-scalable=yes">
-    <title><?php 
-        $titles = [
-            'dashboard' => 'Dashboard',
-            'movies' => 'Kelola Film',
-            'add' => 'Tambah Film',
-            'edit' => 'Edit Film',
-            'reviews' => 'Kelola Reviews',
-            'add_review' => 'Tambah Review Manual' 
-        ];
-        echo ($titles[$action] ?? 'Admin') . ' - Movie Review Admin';
-    ?></title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #f5f7fa;
-        }
-        
-        .sidebar {
-            position: fixed;
-            left: 0;
-            top: 0;
-            width: 260px;
-            height: 100vh;
-            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px 20px;
-            overflow-y: auto;
-            z-index: 1000;
-        }
-        
-        .sidebar h1 {
-            font-size: 1.5em;
-            margin-bottom: 30px;
-            text-align: center;
-        }
-        
-        .nav-menu {
-            list-style: none;
-        }
-        
-        .nav-menu li {
-            margin-bottom: 10px;
-        }
-        
-        .nav-menu a {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 12px 16px;
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            transition: all 0.3s;
-        }
-        
-        .nav-menu a:hover, .nav-menu a.active {
-            background: rgba(255,255,255,0.2);
-            transform: translateX(5px);
-        }
-        
-        .main-content {
-            margin-left: 260px;
-            padding: 30px;
-            min-height: 100vh;
-        }
-        
-        .back-button {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 10px 20px;
-            background: white;
-            color: #667eea;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: 600;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            transition: all 0.3s;
-            margin-bottom: 20px;
-        }
-        
-        .back-button:hover {
-            background: #667eea;
-            color: white;
-            transform: translateX(-5px);
-        }
-        
-        .header {
-            background: white;
-            padding: 25px 30px;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-            margin-bottom: 30px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        
-        .header h2 {
-            color: #333;
-            font-size: 1.8em;
-        }
-        
-        .btn {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            transition: all 0.3s;
-        }
-        
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea, #764ba2);
-            color: white;
-        }
-        
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
-        
-        .btn-success { background: #28a745; color: white; }
-        .btn-danger { background: #dc3545; color: white; }
-        .btn-warning { background: #ffc107; color: #333; }
-        .btn-info { background: #17a2b8; color: white; }
-        
-        .btn-sm { padding: 6px 12px; font-size: 13px; }
-        
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        
-        .stat-card {
-            background: white;
-            padding: 25px;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-            transition: all 0.3s;
-        }
-        
-        .stat-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 8px 20px rgba(0,0,0,0.1);
-        }
-        
-        .stat-card h3 {
-            color: #666;
-            font-size: 0.9em;
-            margin-bottom: 10px;
-        }
-        
-        .stat-number {
-            font-size: 2.5em;
-            font-weight: bold;
-            color: #667eea;
-        }
-        
-        .card {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-            padding: 30px;
-            margin-bottom: 20px;
-        }
-        
-        .card h3 {
-            color: #333;
-            margin-bottom: 20px;
-            font-size: 1.3em;
-        }
-        
-        .form-group {
-            margin-bottom: 20px;
-        }
-        
-        .form-group label {
-            display: block;
-            color: #333;
-            font-weight: 600;
-            margin-bottom: 8px;
-        }
-        
-        .form-group input,
-        .form-group textarea,
-        .form-group select {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 14px;
-            font-family: inherit;
-            transition: border 0.3s;
-        }
-        
-        .form-group input:focus,
-        .form-group textarea:focus,
-        .form-group select:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
-        }
-        
-        .form-group textarea {
-            resize: vertical;
-            min-height: 100px;
-        }
-        
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
-        
-        .form-row-3 {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 20px;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        
-        table th {
-            background: #f8f9fa;
-            padding: 15px;
-            text-align: left;
-            font-weight: 600;
-            color: #333;
-            border-bottom: 2px solid #e0e0e0;
-        }
-        
-        table td {
-            padding: 15px;
-            border-bottom: 1px solid #e0e0e0;
-        }
-        
-        table tr:hover {
-            background: #f8f9fa;
-        }
-        
-        .movie-poster-thumb {
-            width: 60px;
-            height: 90px;
-            object-fit: cover;
-            border-radius: 6px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        }
-        
-        .rating-badge {
-            background: #ffc107;
-            color: #333;
-            padding: 5px 12px;
-            border-radius: 15px;
-            font-weight: bold;
-            font-size: 0.9em;
-        }
-        
-        .message {
-            padding: 15px 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-weight: 500;
-            animation: slideIn 0.3s ease;
-        }
-        
-        @keyframes slideIn {
-            from { transform: translateY(-20px); opacity: 0; }
-            to { transform: translateY(0); opacity: 1; }
-        }
-        
-        .message.success {
-            background: #d4edda;
-            color: #155724;
-            border-left: 4px solid #28a745;
-        }
-        
-        .message.error {
-            background: #f8d7da;
-            color: #721c24;
-            border-left: 4px solid #dc3545;
-        }
-        
-        .poster-preview {
-            max-width: 300px;
-            margin-top: 15px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        }
-        
-        .quick-links {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 20px;
-            border-radius: 12px;
-            margin-top: 20px;
-        }
-        
-        .quick-links h4 {
-            color: white;
-            margin-bottom: 15px;
-        }
-        
-        .quick-links a {
-            display: block;
-            color: white;
-            text-decoration: none;
-            padding: 10px;
-            margin: 5px 0;
-            background: rgba(255,255,255,0.1);
-            border-radius: 6px;
-            transition: all 0.3s;
-        }
-        
-        .quick-links a:hover {
-            background: rgba(255,255,255,0.2);
-            transform: translateX(5px);
-        }
-        
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            color: #999;
-        }
-        
-        .empty-state i {
-            font-size: 4em;
-            margin-bottom: 20px;
-            color: #ddd;
-        }
-
-        .rating-radio-group {
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
-        }
-
-        .rating-option {
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            cursor: pointer;
-            padding: 8px 15px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            transition: all 0.3s;
-            background: white;
-        }
-
-        .rating-option:hover {
-            border-color: #667eea;
-            background: #f8f9fa;
-        }
-
-        .rating-option input[type="radio"] {
-            margin: 0;
-            cursor: pointer;
-        }
-
-        .rating-option input[type="radio"]:checked {
-            accent-color: #667eea;
-        }
-
-        .rating-option:has(input[type="radio"]:checked) {
-            border-color: #667eea;
-            background: #667eea;
-            color: white;
-        }
-
-        .sync-notice {
-            background: #e3f2fd;
-            border-left: 4px solid #2196f3;
-            padding: 12px 16px;
-            margin-bottom: 15px;
-            border-radius: 4px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .sync-notice i {
-            color: #1976d2;
-        }
-
-        .sync-notice span {
-            color: #1565c0;
-            font-weight: 500;
-        }
-
-        .rating-info-box {
-            background: #fff3cd;
-            border-left: 4px solid #ffc107;
-            padding: 12px 16px;
-            margin-bottom: 15px;
-            border-radius: 4px;
-        }
-
-        .rating-info-box strong {
-            color: #856404;
-        }
-        
-        .status-tabs { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
-        .status-tabs a {
-            padding: 10px 20px; background: white; color: #667eea; border-radius: 25px;
-            text-decoration: none; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.08); transition: all 0.3s;
-        }
-        .status-tabs a:hover, .status-tabs a.active { background: linear-gradient(135deg, #667eea, #764ba2); color: white; }
-        .status-badge { padding: 5px 12px; border-radius: 15px; font-size: 0.82em; font-weight: 600; white-space: nowrap; }
-        .status-badge.coming { background: #fff3cd; color: #856404; }
-        .status-badge.released { background: #d4edda; color: #155724; }
-        .status-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
-        .status-option { cursor: pointer; display: block; }
-        .status-option input { display: none; }
-        .status-option span {
-            display: flex; flex-direction: column; gap: 4px; padding: 16px 18px;
-            border: 2px solid #e0e0e0; border-radius: 10px; transition: all 0.3s; background: white;
-        }
-        .status-option span i { color: #667eea; font-size: 1.3em; }
-        .status-option span small { color: #888; font-weight: normal; }
-        .status-option:hover span { border-color: #667eea; }
-        .status-option input:checked + span { border-color: #667eea; background: #f0f2ff; box-shadow: 0 0 0 3px rgba(102,126,234,0.15); }
-
-        @media (max-width: 768px) {
-            .status-choice { grid-template-columns: 1fr; }
-            .sidebar {
-                width: 100%;
-                height: auto;
-                position: relative;
-            }
-            
-            .main-content {
-                margin-left: 0;
-                padding: 15px;
-            }
-            
-            .form-row, .form-row-3 {
-                grid-template-columns: 1fr;
-            }
-            
-            table {
-                font-size: 13px;
-            }
-            
-            .header {
-                flex-direction: column;
-                gap: 15px;
-            }
-        }
-    </style>
+<meta charset="UTF-8">
+<title>Admin Panel - CineScope</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',sans-serif;background:#f5f7fa}
+.sidebar{position:fixed;left:0;top:0;width:260px;height:100vh;background:linear-gradient(180deg,#667eea,#764ba2);color:#fff;padding:30px 20px;overflow-y:auto}
+.sidebar h1{font-size:1.5em;margin-bottom:30px;text-align:center}
+.nav-menu{list-style:none}
+.nav-menu li{margin-bottom:10px}
+.nav-menu a{display:flex;align-items:center;gap:12px;padding:12px 16px;color:#fff;text-decoration:none;border-radius:8px;transition:.3s}
+.nav-menu a:hover,.nav-menu a.active{background:rgba(255,255,255,.2)}
+.main-content{margin-left:260px;padding:30px;min-height:100vh}
+.header{background:#fff;padding:25px 30px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05);margin-bottom:30px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:15px}
+.header h2{color:#333}
+.btn{padding:10px 20px;border:none;border-radius:8px;cursor:pointer;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:8px;transition:.3s;font-size:14px;color:#fff;background:#667eea}
+.btn:hover{opacity:.9}
+.btn-primary{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff}
+.btn-success{background:#28a745}
+.btn-danger{background:#dc3545}
+.btn-warning{background:#ffc107;color:#333}
+.btn-info{background:#17a2b8}
+.btn-sm{padding:6px 12px;font-size:13px}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:20px;margin-bottom:30px}
+.stat-card{background:#fff;padding:25px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05)}
+.stat-card h3{color:#666;font-size:.9em;margin-bottom:10px}
+.stat-number{font-size:2.5em;font-weight:bold;color:#667eea}
+.card{background:#fff;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05);padding:30px;margin-bottom:20px}
+.card h3{margin-bottom:20px}
+.form-group{margin-bottom:20px}
+.form-group label{display:block;font-weight:600;margin-bottom:8px}
+.form-group input,.form-group textarea,.form-group select{width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:8px;font-size:14px;font-family:inherit}
+.form-group textarea{resize:vertical;min-height:100px}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.form-row-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px}
+table{width:100%;border-collapse:collapse}
+table th{background:#f8f9fa;padding:15px;text-align:left;border-bottom:2px solid #e0e0e0}
+table td{padding:15px;border-bottom:1px solid #e0e0e0}
+.movie-poster-thumb{width:60px;height:90px;object-fit:cover;border-radius:6px}
+.rating-badge{background:#ffc107;color:#333;padding:5px 12px;border-radius:15px;font-weight:bold;font-size:.9em}
+.message{padding:15px 20px;border-radius:8px;margin-bottom:20px;font-weight:500}
+.message.success{background:#d4edda;color:#155724;border-left:4px solid #28a745}
+.message.error{background:#f8d7da;color:#721c24;border-left:4px solid #dc3545}
+.empty-state{text-align:center;padding:60px 20px;color:#999}
+.empty-state i{font-size:4em;margin-bottom:20px;color:#ddd;display:block}
+.status-tabs{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}
+.status-tabs a{padding:10px 20px;background:#fff;color:#667eea;border-radius:25px;text-decoration:none;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.status-tabs a.active{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff}
+.rating-radio-group{display:flex;gap:15px;flex-wrap:wrap}
+.rating-option{padding:8px 15px;border:2px solid #e0e0e0;border-radius:8px;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+.rating-option input{display:inline}
+@media(max-width:768px){.sidebar{width:100%;height:auto;position:relative}.main-content{margin-left:0;padding:15px}.form-row,.form-row-3{grid-template-columns:1fr}}
+</style>
 </head>
 <body>
-    <div class="sidebar">
-        <h1>🎬 Admin Panel</h1>
-        <ul class="nav-menu">
-            <li><a href="?action=dashboard" class="<?php echo $action === 'dashboard' ? 'active' : ''; ?>">
-                <i class="fas fa-home"></i> Dashboard
-            </a></li>
-            <li><a href="?action=movies&status=all" class="<?php echo $action === 'movies' ? 'active' : ''; ?>">
-                <i class="fas fa-film"></i> Daftar Film
-            </a></li>
-            <li><a href="?action=add" class="<?php echo $action === 'add' ? 'active' : ''; ?>">
-                <i class="fas fa-plus-circle"></i> Tambah Film
-            </a></li>
-            <li><a href="?action=reviews" class="<?php echo $action === 'reviews' ? 'active' : ''; ?>">
-                <i class="fas fa-star"></i> Kelola Reviews
-            </a></li>
-            <li><a href="?action=add_review" class="<?php echo $action === 'add_review' ? 'active' : ''; ?>">
-                <i class="fas fa-comment-dots"></i> Tambah Review Manual
-            </a></li>
-            <li><a href="user.php" target="_blank">
-                <i class="fas fa-external-link-alt"></i> Lihat Website User
-            </a></li>
-            <li><a href="index.php" target="_blank">
-                <i class="fas fa-globe"></i> Lihat Website Guest
-            </a></li>
-        </ul>
-        
-        <div class="quick-links">
-            <h4>⚡ Quick Access</h4>
-            <a href="get_movies.php" target="_blank"><i class="fas fa-code"></i> API Movies</a>
-            <a href="http://localhost/phpmyadmin" target="_blank"><i class="fas fa-database"></i> phpMyAdmin</a>
-        </div>
-    </div>
-    
-    <div class="main-content">
-        <?php if ($action !== 'dashboard'): ?>
-            <a href="?action=<?php echo ($action === 'edit' || $action === 'add' || $action === 'add_review') ? 'movies' : 'dashboard'; ?>" class="back-button">
-                <i class="fas fa-arrow-left"></i> Kembali
-            </a>
-        <?php endif; ?>
-        
-        <?php if ($message): ?>
-            <div class="message <?php echo $messageType; ?>">
-                <?php echo $message; ?>
-            </div>
-        <?php endif; ?>
-        
-        <?php if ($action === 'dashboard'): ?>
-            <div class="header">
-                <h2>📊 Dashboard Overview</h2>
-                <span style="color:#999;">Selamat datang di Admin Panel</span>
-            </div>
-            
-            <div class="stats-grid">
-                <div class="stat-card">
-                    <h3><i class="fas fa-film"></i> Total Film</h3>
-                    <div class="stat-number"><?php echo $totalMovies; ?></div>
-                </div>
-                <div class="stat-card">
-                    <h3><i class="fas fa-clock"></i> Film Coming Soon</h3>
-                    <div class="stat-number"><?php echo $countComing; ?></div>
-                </div>
-                <div class="stat-card">
-                    <h3><i class="fas fa-comments"></i> Total Reviews</h3>
-                    <div class="stat-number"><?php echo $totalReviews; ?></div>
-                </div>
-                <div class="stat-card">
-                    <h3><i class="fas fa-star"></i> Rating Rata-rata</h3>
-                    <div class="stat-number"><?php echo $avgRating ? number_format($avgRating, 1) : '0.0'; ?></div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3>🎥 Daftar Film</h3>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Poster</th>
-                            <th>Judul</th>
-                            <th>Tahun</th>
-                            <th>Rating</th>
-                            <th>Reviews</th>
-                            <th>Aksi</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach($movies as $movie): ?>
-                        <tr>
-                            <td><?= $movie['id'] ?></td>
-                            <td>
-                                <?php if (!empty($movie['poster'])): ?>
-                                    <img src="<?php echo htmlspecialchars($movie['poster']); ?>" class="movie-poster-thumb" alt="">
-                                <?php else: ?>
-                                    <div style="width:60px;height:90px;background:#667eea;border-radius:6px;display:flex;align-items:center;justify-content:center;color:white;font-size:24px;">🎬</div>
-                                <?php endif; ?>
-                            </td>
-                            <td><strong><?php echo htmlspecialchars($movie['title']); ?></strong></td>
-                            <td><?php echo htmlspecialchars($movie['release_year']); ?></td>
-                            <td><span class="rating-badge">⭐ <?php echo number_format($movie['calc_avg_rating'], 1); ?></span></td>
-                            <td><?php echo $movie['review_count']; ?></td>
-                            <td>
-                                <a href="?action=edit&id=<?php echo $movie['id']; ?>" class="btn btn-warning btn-sm">
-                                    <i class="fas fa-edit"></i> Edit
-                                </a>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-            
-        <?php elseif ($action === 'movies'): ?>
-            <div class="header">
-                <h2><?php echo $statusFilter === 'coming_soon' ? '⏳ Film Coming Soon' : ($statusFilter === 'released' ? '🎥 Daftar Film' : '🎥 Kelola Film'); ?></h2>
-                <a href="?action=add&status=<?php echo $statusFilter === 'coming_soon' ? 'coming_soon' : 'released'; ?>" class="btn btn-primary">
-                    <i class="fas fa-plus"></i> Tambah Film Baru
-                </a>
-            </div>
+<div class="sidebar">
+<h1>🎬 Admin Panel</h1>
+<ul class="nav-menu">
+<li><a href="?action=dashboard" class="<?= $action === 'dashboard' ? 'active' : '' ?>"><i class="fas fa-home"></i> Dashboard</a></li>
+<li><a href="?action=movies&status=all" class="<?= $action === 'movies' ? 'active' : '' ?>"><i class="fas fa-film"></i> Daftar Film</a></li>
+<li><a href="?action=add" class="<?= $action === 'add' ? 'active' : '' ?>"><i class="fas fa-plus-circle"></i> Tambah Film</a></li>
+<li><a href="?action=reviews" class="<?= $action === 'reviews' ? 'active' : '' ?>"><i class="fas fa-star"></i> Kelola Reviews</a></li>
+<li><a href="?action=add_review" class="<?= $action === 'add_review' ? 'active' : '' ?>"><i class="fas fa-comment-dots"></i> Tambah Review</a></li>
+</ul>
+</div>
 
-            <div class="status-tabs">
-                <a href="?action=movies&status=all" class="<?php echo $statusFilter === 'all' ? 'active' : ''; ?>">Semua (<?php echo count($movies); ?>)</a>
-                <a href="?action=movies&status=released" class="<?php echo $statusFilter === 'released' ? 'active' : ''; ?>">Daftar Film (<?php echo $countReleased; ?>)</a>
-                <a href="?action=movies&status=coming_soon" class="<?php echo $statusFilter === 'coming_soon' ? 'active' : ''; ?>">Coming Soon (<?php echo $countComing; ?>)</a>
-            </div>
-            
-            <div class="card">
-                <?php if (count($filteredMovies) === 0): ?>
-                    <div class="empty-state">
-                        <i class="fas fa-film"></i>
-                        <h3>Belum ada film di kategori ini</h3>
-                    </div>
-                <?php else: ?>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Poster</th>
-                            <th>Judul</th>
-                            <th>Status</th>
-                            <th>Genre</th>
-                            <th>Tahun</th>
-                            <th>Rating</th>
-                            <th>Reviews</th>
-                            <th>Aksi</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach($filteredMovies as $movie): $isComing = ($movie['status'] ?? 'released') === 'coming_soon'; ?>
-                        <tr>
-                            <td><?php echo $movie['id']; ?></td>
-                            <td>
-                                <?php if (!empty($movie['poster'])): ?>
-                                    <img src="<?php echo htmlspecialchars($movie['poster']); ?>" class="movie-poster-thumb" alt="">
-                                <?php else: ?>
-                                    <div style="width:60px;height:90px;background:#667eea;border-radius:6px;display:flex;align-items:center;justify-content:center;color:white;font-size:24px;">🎬</div>
-                                <?php endif; ?>
-                            </td>
-                            <td><strong><?php echo htmlspecialchars($movie['title']); ?></strong></td>
-                            <td>
-                                <?php if ($isComing): ?>
-                                    <span class="status-badge coming"><i class="fas fa-clock"></i> Coming Soon</span>
-                                    <?php if (!empty($movie['release_date'])): ?>
-                                        <div style="font-size:12px;color:#888;margin-top:4px;"><?php echo date('d/m/Y', strtotime($movie['release_date'])); ?></div>
-                                    <?php endif; ?>
-                                <?php else: ?>
-                                    <span class="status-badge released"><i class="fas fa-check"></i> Daftar Film</span>
-                                <?php endif; ?>
-                            </td>
-                            <td><?php echo htmlspecialchars($movie['genre']); ?></td>
-                            <td><?php echo htmlspecialchars($movie['release_year']); ?></td>
-                            <td><span class="rating-badge">⭐ <?php echo number_format($movie['calc_avg_rating'], 1); ?></span></td>
-                            <td><?php echo $movie['review_count']; ?></td>
-                            <td style="white-space:nowrap;">
-                                <?php if ($isComing): ?>
-                                    <a href="?set_status=released&id=<?php echo $movie['id']; ?>" class="btn btn-success btn-sm" title="Tampilkan di Daftar Film"
-                                       onclick="return confirm('Pindahkan film ini ke Daftar Film?')">
-                                        <i class="fas fa-arrow-right"></i> Ke Daftar Film
-                                    </a>
-                                <?php else: ?>
-                                    <a href="?set_status=coming_soon&id=<?php echo $movie['id']; ?>" class="btn btn-info btn-sm" title="Kembalikan ke Coming Soon"
-                                       onclick="return confirm('Kembalikan film ini ke Coming Soon?')">
-                                        <i class="fas fa-undo"></i>
-                                    </a>
-                                <?php endif; ?>
-                                <a href="?action=edit&id=<?php echo $movie['id']; ?>" class="btn btn-warning btn-sm">
-                                    <i class="fas fa-edit"></i>
-                                </a>
-                                <a href="?delete=<?php echo $movie['id']; ?>&status=<?php echo urlencode($statusFilter); ?>" class="btn btn-danger btn-sm" onclick="return confirm('Yakin hapus film ini?')">
-                                    <i class="fas fa-trash"></i>
-                                </a>
-                            </td>
-                        </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-                <?php endif; ?>
-            </div>
-            
-        <?php elseif ($action === 'add' || $action === 'edit'): ?>
-            <div class="header">
-                <h2><?php echo $action === 'edit' ? '✏️ Edit Film' : '➕ Tambah Film Baru'; ?></h2>
-            </div>
-            
-            <div class="sync-notice">
-                <i class="fas fa-info-circle"></i>
-                <span>💡 TIP: Film dengan nama serupa (contoh: Sore, Sore: Istri Dari Masa Depan) akan otomatis ter-sync posternya.</span>
-            </div>
+<div class="main-content">
+<?php if ($action !== 'dashboard'): ?>
+<a href="?action=<?= ($action === 'edit' || $action === 'add' || $action === 'add_review') ? 'movies' : 'dashboard' ?>" class="btn btn-primary" style="margin-bottom:20px"><i class="fas fa-arrow-left"></i> Kembali</a>
+<?php endif; ?>
 
-            <div class="rating-info-box">
-                <strong>ℹ️ INFO RATING:</strong> Rating akan dihitung otomatis dari review pengguna. Tidak perlu input manual.
-            </div>
-            
-            <div class="card">
-                <form method="POST" enctype="multipart/form-data">
-                    <?php if ($action === 'edit'): ?>
-                        <input type="hidden" name="movie_id" value="<?php echo $editMovie['id']; ?>">
-                        <input type="hidden" name="existing_poster" value="<?php echo $editMovie['poster']; ?>">
-                    <?php endif; ?>
-                    
-                    <?php
-                        $curStatus = $editMovie['status'] ?? ($_GET['status'] ?? 'released');
-                        if ($curStatus !== 'coming_soon') $curStatus = 'released';
-                    ?>
-                    <div class="form-group">
-                        <label>Tempatkan Film Di <span style="color:red;">*</span></label>
-                        <div class="status-choice">
-                            <label class="status-option">
-                                <input type="radio" name="status" value="released" <?php echo $curStatus === 'released' ? 'checked' : ''; ?> onchange="toggleReleaseDate()">
-                                <span><i class="fas fa-film"></i> <strong>Daftar Film</strong><small>Langsung tampil & bisa direview</small></span>
-                            </label>
-                            <label class="status-option">
-                                <input type="radio" name="status" value="coming_soon" <?php echo $curStatus === 'coming_soon' ? 'checked' : ''; ?> onchange="toggleReleaseDate()">
-                                <span><i class="fas fa-clock"></i> <strong>Coming Soon</strong><small>Tampil di section Coming Soon</small></span>
-                            </label>
-                        </div>
-                    </div>
+<?php if ($message): ?><div class="message <?= $messageType ?>"><?= $message ?></div><?php endif; ?>
 
-                    <div class="form-group" id="releaseDateGroup" style="display:none;">
-                        <label>Tanggal Rilis (untuk Coming Soon)</label>
-                        <input type="date" name="release_date" value="<?php echo htmlspecialchars($editMovie['release_date'] ?? ''); ?>">
-                    </div>
+<?php if ($action === 'dashboard'): ?>
+<div class="header"><h2>📊 Dashboard</h2></div>
+<div class="stats-grid">
+<div class="stat-card"><h3>Total Film</h3><div class="stat-number"><?= $totalMovies ?></div></div>
+<div class="stat-card"><h3>Coming Soon</h3><div class="stat-number"><?= $countComing ?></div></div>
+<div class="stat-card"><h3>Total Reviews</h3><div class="stat-number"><?= $totalReviews ?></div></div>
+<div class="stat-card"><h3>Rating Rata-rata</h3><div class="stat-number"><?= $avgRating ? number_format($avgRating, 1) : '0.0' ?></div></div>
+</div>
+<div class="card"><h3>🎥 Daftar Film</h3>
+<table><thead><tr><th>ID</th><th>Poster</th><th>Judul</th><th>Tahun</th><th>Rating</th><th>Reviews</th><th>Aksi</th></tr></thead><tbody>
+<?php foreach($movies as $m): ?>
+<tr>
+<td><?= $m['id'] ?></td>
+<td><?php if(!empty($m['poster'])): ?><img src="<?= htmlspecialchars($m['poster']) ?>" class="movie-poster-thumb"><?php endif; ?></td>
+<td><strong><?= htmlspecialchars($m['title']) ?></strong></td>
+<td><?= htmlspecialchars($m['release_year'] ?? '') ?></td>
+<td><span class="rating-badge">⭐ <?= number_format($m['calc_avg_rating'], 1) ?></span></td>
+<td><?= $m['review_count'] ?></td>
+<td><a href="?action=edit&id=<?= $m['id'] ?>" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a></td>
+</tr>
+<?php endforeach; ?>
+</tbody></table></div>
 
-                    <div class="form-group">
-                        <label>Judul Film <span style="color:red;">*</span></label>
-                        <input type="text" name="title" required value="<?php echo $editMovie['title'] ?? ''; ?>" placeholder="Contoh: Sore">
-                    </div>
-                    
-                    <div class="form-row-3">
-                        <div class="form-group">
-                            <label>Tahun Rilis <span style="color:red;">*</span></label>
-                            <input type="number" name="release_year" required value="<?php echo $editMovie['release_year'] ?? date('Y'); ?>" min="1900" max="2099">
-                        </div>
-                        <div class="form-group">
-                            <label>Durasi (menit)</label>
-                            <input type="number" name="duration" value="<?php echo $editMovie['duration'] ?? ''; ?>">
-                        </div>
-                        <div class="form-group">
-                            <label>Rating Saat Ini (Auto)</label>
-                            <input type="text" value="<?php echo $editMovie ? number_format($editMovie['average_rating'], 1) : '0.0'; ?>" disabled style="background:#f0f0f0;">
-                        </div>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Genre <span style="color:red;">*</span></label>
-                        <input type="text" name="genre" required value="<?php echo $editMovie['genre'] ?? ''; ?>" placeholder="Contoh: Drama, Romance">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Sutradara</label>
-                        <input type="text" name="director" value="<?php echo $editMovie['director'] ?? ''; ?>" placeholder="Contoh: Fajar Bustomi">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Sinopsis <span style="color:red;">*</span></label>
-                        <textarea name="synopsis" required placeholder="Tulis sinopsis film..."><?php echo $editMovie['synopsis'] ?? ''; ?></textarea>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>Upload Poster Film</label>
-                        <input type="file" name="poster" accept="image/*" onchange="previewImage(this)">
-                        <?php if ($action === 'edit' && !empty($editMovie['poster'])): ?>
-                            <img src="<?php echo $editMovie['poster']; ?>" class="poster-preview" id="preview">
-                        <?php else: ?>
-                            <img id="preview" class="poster-preview" style="display:none;">
-                        <?php endif; ?>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label>URL Trailer YouTube</label>
-                        <input type="url" name="trailer_url" value="<?php echo $editMovie['trailer_url'] ?? ''; ?>" placeholder="https://youtube.com/...">
-                    </div>
-                    
-                    <div style="display:flex; gap:10px; margin-top:30px;">
-                        <button type="submit" name="<?php echo $action === 'edit' ? 'update_movie' : 'create_movie'; ?>" class="btn btn-primary">
-                            <i class="fas fa-save"></i> <?php echo $action === 'edit' ? 'Update Film' : 'Simpan Film'; ?>
-                        </button>
-                        <a href="?action=movies" class="btn btn-danger">
-                            <i class="fas fa-times"></i> Batal
-                        </a>
-                    </div>
-                </form>
-            </div>
+<?php elseif ($action === 'movies'): ?>
+<div class="header"><h2>🎥 Kelola Film</h2><a href="?action=add" class="btn btn-primary"><i class="fas fa-plus"></i> Tambah Film</a></div>
+<div class="status-tabs">
+<a href="?action=movies&status=all" class="<?= $statusFilter === 'all' ? 'active' : '' ?>">Semua (<?= count($movies) ?>)</a>
+<a href="?action=movies&status=released" class="<?= $statusFilter === 'released' ? 'active' : '' ?>">Daftar Film (<?= $countReleased ?>)</a>
+<a href="?action=movies&status=coming_soon" class="<?= $statusFilter === 'coming_soon' ? 'active' : '' ?>">Coming Soon (<?= $countComing ?>)</a>
+</div>
+<div class="card">
+<?php if (count($filteredMovies) === 0): ?>
+<div class="empty-state"><i class="fas fa-film"></i><h3>Belum ada film</h3></div>
+<?php else: ?>
+<table><thead><tr><th>ID</th><th>Poster</th><th>Judul</th><th>Genre</th><th>Tahun</th><th>Rating</th><th>Reviews</th><th>Aksi</th></tr></thead><tbody>
+<?php foreach($filteredMovies as $m): ?>
+<tr>
+<td><?= $m['id'] ?></td>
+<td><?php if(!empty($m['poster'])): ?><img src="<?= htmlspecialchars($m['poster']) ?>" class="movie-poster-thumb"><?php endif; ?></td>
+<td><strong><?= htmlspecialchars($m['title']) ?></strong>
+<?php if (($m['status'] ?? 'released') === 'coming_soon'): ?>
+<br><span class="rating-badge" style="background:#17a2b8;color:#fff;font-size:.75em">⏳ Coming Soon</span>
+<?php else: ?>
+<br><span class="rating-badge" style="background:#28a745;color:#fff;font-size:.75em">🎬 Daftar Film</span>
+<?php endif; ?>
+</td>
+<td><?= htmlspecialchars($m['genre'] ?? '') ?></td>
+<td><?= htmlspecialchars($m['release_year'] ?? '') ?></td>
+<td><span class="rating-badge">⭐ <?= number_format($m['calc_avg_rating'], 1) ?></span></td>
+<td><?= $m['review_count'] ?></td>
+<td>
+<a href="?action=edit&id=<?= $m['id'] ?>" class="btn btn-warning btn-sm"><i class="fas fa-edit"></i></a>
+<?php if (($m['status'] ?? 'released') === 'coming_soon'): ?>
+<a href="?set_status=released&id=<?= $m['id'] ?>" class="btn btn-success btn-sm" title="Pindah ke Daftar Film" onclick="return confirm('Pindahkan ke Daftar Film?')"><i class="fas fa-check"></i></a>
+<?php else: ?>
+<a href="?set_status=coming_soon&id=<?= $m['id'] ?>" class="btn btn-info btn-sm" title="Pindah ke Coming Soon" onclick="return confirm('Pindahkan ke Coming Soon?')"><i class="fas fa-clock"></i></a>
+<?php endif; ?>
+<a href="?delete=<?= $m['id'] ?>" class="btn btn-danger btn-sm" onclick="return confirm('Hapus film ini?')"><i class="fas fa-trash"></i></a>
+</td>
+</tr>
+<?php endforeach; ?>
+</tbody></table>
+<?php endif; ?>
+</div>
 
-        <?php elseif ($action === 'add_review'): ?> 
-            <div class="header">
-                <h2>➕ Tambah Review Manual</h2>
-            </div>
-            
-            <?php if (count($moviesList) === 0): ?>
-                <div class="card">
-                    <div class="empty-state">
-                        <i class="fas fa-film"></i>
-                        <h3>Belum Ada Film</h3>
-                        <p>Silakan tambahkan film terlebih dahulu</p>
-                        <a href="?action=add" class="btn btn-primary" style="margin-top: 20px;">
-                            <i class="fas fa-plus"></i> Tambah Film
-                        </a>
-                    </div>
-                </div>
-            <?php elseif (count($usersList) === 0): ?>
-                <div class="card">
-                    <div class="empty-state">
-                        <i class="fas fa-users"></i>
-                        <h3>Belum Ada User</h3>
-                        <p>Pastikan ada user yang terdaftar di database</p>
-                    </div>
-                </div>
-            <?php else: ?>
-            
-            <div class="card">
-                <form method="POST" id="reviewForm">
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Pilih Film <span style="color:red;">*</span></label>
-                            <select name="movie_id" id="movie_id" required>
-                                <option value="">-- Pilih Film --</option>
-                                <?php foreach($moviesList as $movie): ?>
-                                    <option value="<?php echo $movie['id']; ?>">
-                                        [ID:<?php echo $movie['id']; ?>] <?php echo htmlspecialchars($movie['title']); ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label>Pilih User <span style="color:red;">*</span></label>
-                            <select name="user_id" id="user_id" required>
-                                <option value="">-- Pilih User --</option>
-                                <?php foreach($usersList as $user): ?>
-                                    <option value="<?php echo $user['id']; ?>">
-                                        [ID:<?php echo $user['id']; ?>] <?php echo htmlspecialchars($user['username']); ?>
-                                        <?php if (!empty($user['full_name'])): ?>
-                                            (<?php echo htmlspecialchars($user['full_name']); ?>)
-                                        <?php endif; ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
+<?php elseif ($action === 'add' || $action === 'edit'): ?>
+<div class="header"><h2><?= $action === 'edit' ? '✏️ Edit Film' : '➕ Tambah Film' ?></h2></div>
+<div class="card">
+<form method="POST" enctype="multipart/form-data">
+<?php if ($action === 'edit'): ?>
+<input type="hidden" name="movie_id" value="<?= $editMovie['id'] ?>">
+<input type="hidden" name="existing_poster" value="<?= htmlspecialchars($editMovie['poster'] ?? '') ?>">
+<?php endif; ?>
 
-                    <div class="form-group">
-                        <label>Rating (1-5 Bintang) <span style="color:red;">*</span></label>
-                        <div class="rating-radio-group">
-                            <?php for ($i = 1; $i <= 5; $i++): ?>
-                                <label class="rating-option">
-                                    <input type="radio" name="rating" value="<?php echo $i; ?>" required>
-                                    <span><?php echo $i; ?> <i class="fas fa-star" style="color:#ffc107;"></i></span>
-                                </label>
-                            <?php endfor; ?>
-                        </div>
-                    </div>
+<div class="form-group">
+<label>Judul Film *</label>
+<input type="text" name="title" required value="<?= htmlspecialchars($editMovie['title'] ?? '') ?>">
+</div>
 
-                    <div class="form-group">
-                        <label>Teks Review (Opsional)</label>
-                        <textarea name="review_text" id="review_text" placeholder="Tuliskan ulasan..."></textarea>
-                    </div>
-                    
-                    <div style="display:flex; gap:10px; margin-top:30px;">
-                        <button type="submit" name="submit_review" class="btn btn-primary">
-                            <i class="fas fa-plus"></i> Tambah Review
-                        </button>
-                        <a href="?action=reviews" class="btn btn-danger">
-                            <i class="fas fa-times"></i> Batal
-                        </a>
-                    </div>
-                </form>
-            </div>
-            <?php endif; ?>
-        
-        <?php elseif ($action === 'reviews'): ?>
-            <div class="header">
-                <h2>⭐ Kelola Reviews</h2>
-                <div>
-                    <span style="color:#999; margin-right: 15px;">Total: <?php echo count($reviews); ?> reviews</span>
-                    <a href="?action=add_review" class="btn btn-success">
-                        <i class="fas fa-plus"></i> Tambah Review
-                    </a>
-                </div>
-            </div>
-            
-            <div class="card">
-                <?php if (count($reviews) > 0): ?>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Film</th>
-                                <th>User</th>
-                                <th>Rating</th>
-                                <th>Review</th>
-                                <th>Tanggal</th>
-                                <th>Aksi</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach($reviews as $review): ?>
-                            <tr>
-                                <td><?php echo $review['id']; ?></td>
-                                <td><strong><?php echo htmlspecialchars($review['movie_title'] ?? 'Unknown'); ?></strong></td>
-                                <td><?php echo htmlspecialchars($review['full_name'] ?? $review['username'] ?? 'Anonymous'); ?></td>
-                                <td><span class="rating-badge">⭐ <?php echo number_format($review['rating'], 1); ?></span></td>
-                                <td style="max-width:300px;">
-                                    <?php 
-                                    $reviewText = $review['review_text'] ?? '';
-                                    echo !empty($reviewText) ? substr(htmlspecialchars($reviewText), 0, 100) . '...' : '<em style="color:#999;">Tidak ada teks</em>';
-                                    ?>
-                                </td>
-                                <td><?php echo date('d/m/Y H:i', strtotime($review['created_at'])); ?></td>
-                                <td>
-                                    <a href="?action=reviews&delete_review=<?php echo $review['id']; ?>" class="btn btn-danger btn-sm" onclick="return confirm('Hapus review ini?')">
-                                        <i class="fas fa-trash"></i>
-                                    </a>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                <?php else: ?>
-                    <div class="empty-state">
-                        <i class="fas fa-comments"></i>
-                        <h3>Belum Ada Review</h3>
-                        <a href="?action=add_review" class="btn btn-primary" style="margin-top: 20px;">
-                            <i class="fas fa-plus"></i> Tambah Review
-                        </a>
-                    </div>
-                <?php endif; ?>
-            </div>
-        <?php endif; ?>
-        
-        <div style="text-align:center; padding:30px; color:#999; margin-top:50px;">
-            <p>© 2024 Movie Review Admin Panel</p>
-        </div>
-    </div>
-    
-    <script>
-        function toggleReleaseDate() {
-            const checked = document.querySelector('input[name="status"]:checked');
-            const group = document.getElementById('releaseDateGroup');
-            if (group && checked) group.style.display = checked.value === 'coming_soon' ? 'block' : 'none';
-        }
-        document.addEventListener('DOMContentLoaded', toggleReleaseDate);
+<div class="form-row-3">
+<div class="form-group"><label>Tahun *</label><input type="number" name="release_year" required value="<?= htmlspecialchars($editMovie['release_year'] ?? date('Y')) ?>"></div>
+<div class="form-group"><label>Durasi (menit)</label><input type="number" name="duration" value="<?= htmlspecialchars($editMovie['duration'] ?? '') ?>"></div>
+<div class="form-group"><label>Genre *</label><input type="text" name="genre" required value="<?= htmlspecialchars($editMovie['genre'] ?? '') ?>"></div>
+</div>
 
-        function previewImage(input) {
-            const preview = document.getElementById('preview');
-            if (input.files && input.files[0]) {
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    preview.src = e.target.result;
-                    preview.style.display = 'block';
-                }
-                reader.readAsDataURL(input.files[0]);
-            }
-        }
-        
-        setTimeout(function() {
-            const messages = document.querySelectorAll('.message');
-            messages.forEach(msg => {
-                msg.style.transition = 'opacity 0.5s';
-                msg.style.opacity = '0';
-                setTimeout(() => msg.remove(), 500);
-            });
-        }, 5000);
+<div class="form-row">
+<div class="form-group">
+<label>Tampilkan di *</label>
+<?php $curStatus = $editMovie['status'] ?? 'released'; ?>
+<select name="status" required>
+<option value="released" <?= $curStatus !== 'coming_soon' ? 'selected' : '' ?>>🎬 Daftar Film (sudah tayang)</option>
+<option value="coming_soon" <?= $curStatus === 'coming_soon' ? 'selected' : '' ?>>⏳ Coming Soon (segera tayang)</option>
+</select>
+</div>
+<div class="form-group">
+<label>Tanggal Rilis (opsional, untuk Coming Soon)</label>
+<input type="date" name="release_date" value="<?= htmlspecialchars($editMovie['release_date'] ?? '') ?>">
+</div>
+</div>
 
-        const reviewForm = document.getElementById('reviewForm');
-        if (reviewForm) {
-            reviewForm.addEventListener('submit', function(e) {
-                const movieId = document.getElementById('movie_id').value;
-                const userId = document.getElementById('user_id').value;
-                const rating = document.querySelector('input[name="rating"]:checked');
+<div class="form-group"><label>Sutradara</label><input type="text" name="director" value="<?= htmlspecialchars($editMovie['director'] ?? '') ?>"></div>
+<div class="form-group"><label>Pemain (Cast)</label><input type="text" name="cast" value="<?= htmlspecialchars($editMovie['cast'] ?? '') ?>" placeholder="Pisahkan dengan koma"></div>
+<div class="form-group"><label>Sinopsis *</label><textarea name="synopsis" required><?= htmlspecialchars($editMovie['synopsis'] ?? '') ?></textarea></div>
+<div class="form-group"><label>Upload Poster</label><input type="file" name="poster" accept="image/*"><?php if(!empty($editMovie['poster'])): ?><img src="<?= $editMovie['poster'] ?>" style="max-width:150px;margin-top:10px;border-radius:8px"><?php endif; ?></div>
+<div class="form-group"><label>URL Trailer</label><input type="url" name="trailer_url" value="<?= htmlspecialchars($editMovie['trailer_url'] ?? '') ?>"></div>
 
-                if (!movieId || movieId === '' || movieId === '0') {
-                    e.preventDefault();
-                    alert('❌ Silakan pilih film terlebih dahulu!');
-                    return false;
-                }
+<div style="display:flex;gap:10px;margin-top:20px">
+<button type="submit" name="<?= $action === 'edit' ? 'update_movie' : 'create_movie' ?>" class="btn btn-primary"><i class="fas fa-save"></i> <?= $action === 'edit' ? 'Update' : 'Simpan' ?></button>
+<a href="?action=movies" class="btn btn-danger"><i class="fas fa-times"></i> Batal</a>
+</div>
+</form>
+</div>
 
-                if (!userId || userId === '' || userId === '0') {
-                    e.preventDefault();
-                    alert('❌ Silakan pilih user terlebih dahulu!');
-                    return false;
-                }
+<?php elseif ($action === 'add_review'): ?>
+<div class="header"><h2>➕ Tambah Review Manual</h2></div>
+<div class="card">
+<form method="POST">
+<div class="form-row">
+<div class="form-group"><label>Pilih Film *</label><select name="movie_id" required><option value="">-- Pilih --</option><?php foreach($moviesList as $m): ?><option value="<?= $m['id'] ?>">[<?= $m['id'] ?>] <?= htmlspecialchars($m['title']) ?></option><?php endforeach; ?></select></div>
+<div class="form-group"><label>Pilih User *</label><select name="user_id" required><option value="">-- Pilih --</option><?php foreach($usersList as $u): ?><option value="<?= $u['id'] ?>">[<?= $u['id'] ?>] <?= htmlspecialchars($u['username']) ?><?= $u['full_name'] ? ' ('.htmlspecialchars($u['full_name']).')' : '' ?></option><?php endforeach; ?></select></div>
+</div>
+<div class="form-group"><label>Rating (1-5) *</label>
+<div class="rating-radio-group">
+<?php for($i=1;$i<=5;$i++): ?><label class="rating-option"><input type="radio" name="rating" value="<?= $i ?>" required> <?= $i ?> <i class="fas fa-star" style="color:#ffc107"></i></label><?php endfor; ?>
+</div></div>
+<div class="form-group"><label>Teks Review</label><textarea name="review_text"></textarea></div>
+<div style="display:flex;gap:10px;margin-top:20px">
+<button type="submit" name="submit_review" class="btn btn-primary"><i class="fas fa-plus"></i> Tambah</button>
+<a href="?action=reviews" class="btn btn-danger">Batal</a>
+</div>
+</form>
+</div>
 
-                if (!rating) {
-                    e.preventDefault();
-                    alert('❌ Silakan pilih rating 1-5 bintang!');
-                    return false;
-                }
+<?php elseif ($action === 'reviews'): ?>
+<div class="header"><h2>⭐ Kelola Reviews</h2><a href="?action=add_review" class="btn btn-success"><i class="fas fa-plus"></i> Tambah Review</a></div>
+<div class="card">
+<?php if (count($reviews) > 0): ?>
+<table><thead><tr><th>ID</th><th>Film</th><th>User</th><th>Rating</th><th>Review</th><th>Tanggal</th><th>Aksi</th></tr></thead><tbody>
+<?php foreach($reviews as $r): ?>
+<tr>
+<td><?= $r['id'] ?></td>
+<td><strong><?= htmlspecialchars($r['movie_title'] ?? '?') ?></strong></td>
+<td><?= htmlspecialchars($r['full_name'] ?? $r['username'] ?? 'Anon') ?></td>
+<td><span class="rating-badge">⭐ <?= number_format($r['rating'], 1) ?></span></td>
+<td><?= htmlspecialchars(substr($r['review_text'] ?? '', 0, 80)) ?><?= strlen($r['review_text'] ?? '') > 80 ? '...' : '' ?></td>
+<td><?= $r['created_at'] ? date('d/m/Y H:i', strtotime($r['created_at'])) : '-' ?></td>
+<td><a href="?action=reviews&delete_review=<?= $r['id'] ?>" class="btn btn-danger btn-sm" onclick="return confirm('Hapus?')"><i class="fas fa-trash"></i></a></td>
+</tr>
+<?php endforeach; ?>
+</tbody></table>
+<?php else: ?>
+<div class="empty-state"><i class="fas fa-comments"></i><h3>Belum ada review</h3><a href="?action=add_review" class="btn btn-primary" style="margin-top:20px"><i class="fas fa-plus"></i> Tambah</a></div>
+<?php endif; ?>
+</div>
+<?php endif; ?>
 
-                return true;
-            });
-        }
-    </script>
+<div style="text-align:center;padding:30px;color:#999;margin-top:50px">© 2024 CineScope Admin</div>
+</div>
 </body>
 </html>
