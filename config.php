@@ -1,11 +1,13 @@
 <?php
 // config.php - SATU-SATUNYA konfigurasi + helper (Laragon: C:\laragon\www\movie-review\config.php)
-define('DB_HOST', '127.0.0.1');
+
+// ===== KONFIGURASI DATABASE LOKAL (LARAGON) =====
+define('DB_HOST', '127.0.0.1');   // Gunakan 127.0.0.1 untuk lokal
 define('DB_PORT', '3306');
-define('DB_NAME', 'movie_review_db');
-define('DB_USER', 'root');
-define('DB_PASS', '');
-define('APP_DEBUG', true); // WAJIB false kalau website sudah online
+define('DB_NAME', 'cinescope');   // Pastikan nama database di HeidiSQL/phpMyAdmin Laragon sama
+define('DB_USER', 'root');        // Default user Laragon
+define('DB_PASS', '');            // Default password Laragon (kosong)
+define('APP_DEBUG', true);        // Set false jika sudah online
 
 error_reporting(E_ALL);
 ini_set('display_errors', (APP_DEBUG && !defined('IS_API')) ? '1' : '0');
@@ -38,6 +40,9 @@ function db(): PDO {
     }
     return $pdo;
 }
+
+// Alias untuk file lama yang masih memanggil getPDO()
+function getPDO(): PDO { return db(); }
 
 function e($v): string { return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
 

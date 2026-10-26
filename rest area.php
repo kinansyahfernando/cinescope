@@ -1,208 +1,487 @@
 <?php
-// File: film_rest_area.php
-// Halaman film "Rest Area" (ID 4) VERSI LIHAT SAJA (dibuka dari index.php / user.php):
-// - Menampilkan info film, rating rata-rata, jumlah ulasan, dan semua ulasan pengguna
-// - Ada tombol Trailer (membuka URL trailer yang diunggah admin)
-// - TIDAK ada form rating/ulasan dan TIDAK ada Daftar Tonton (itu ada di halaman ulasan_*.php)
+// File: rest area.php (DEBUG VERSION - Cek masalah counting)
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
+session_start();
 
-// Koneksi + session dari config.php (database: movie_review_db)
-require __DIR__ . '/config.php';
-$pdo = db();
-if (session_status() === PHP_SESSION_NONE) session_start();
+$MOVIE_ID = 4; 
+$CURRENT_USER_NAME = $_SESSION['username'] ?? 'Pengguna CineScope Baru';
+$USER_ID = $_SESSION['user_id'] ?? 1;
 
-// Tombol Kembali: user yang sudah login ke user.php, tamu ke index.php
-$homeUrl = !empty($_SESSION['user_id']) ? 'user.php' : 'index.php';
+// Database Configuration
 
-// ---------- Helper ----------
-function cs_e($s) { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+$host     = '127.0.0.1';   // atau 'localhost'
+$dbname   = 'cinescope';   // nama database di Laragon
+$username = 'root';
+$password = '';            // default Laragon kosong
 
-function cs_getPosterPath($posterFromDB) {
-    if (empty($posterFromDB)) return null;
-    foreach (array(__DIR__ . '/' . $posterFromDB, $posterFromDB) as $path) {
-        if (file_exists($path)) return $posterFromDB;
-    }
-    return null;
+
+try {
+    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+} catch(PDOException $e) {
+    die("❌ Error Koneksi Database: " . $e->getMessage());
 }
 
-// Link trailer dari kolom movies.trailer_url (diisi lewat admin): URL penuh atau path file upload
-function cs_trailerHref($trailer) {
-    $trailer = trim((string)$trailer);
-    if ($trailer === '') return null;
-    if (preg_match('~^(https?:)?//~i', $trailer)) return $trailer;
-    return str_replace(' ', '%20', ltrim(str_replace('\\', '/', $trailer), '/'));
-}
+// 🔥 DEBUG: Cek jumlah review di database
+$debugStmt = $pdo->prepare("SELECT COUNT(*) as total FROM reviews WHERE movie_id = ?");
+$debugStmt->execute([$MOVIE_ID]);
+$debugCount = $debugStmt->fetch(PDO::FETCH_ASSOC);
+echo "<!-- DEBUG: Total reviews in database for movie_id {$MOVIE_ID}: {$debugCount['total']} -->\n";
 
-// ---------- Ambil film ----------
-$movieId = 4;   // ID film Rest Area di tabel movies (sesuaikan jika ID di database Anda berbeda)
+// 🔥 AMBIL DATA FILM DARI DATABASE
 $stmt = $pdo->prepare("SELECT * FROM movies WHERE id = ?");
-$stmt->execute([$movieId]);
+$stmt->execute([$MOVIE_ID]);
 $movie = $stmt->fetch(PDO::FETCH_ASSOC);
 
-if (!$movie) {
-    http_response_code(404);
-    die("❌ Film tidak ditemukan!");
+$defaultTitle = 'Rest Area';
+$defaultPoster = 'uploads/posters/poster_restarea.jpg';
+$defaultYear = '2023';
+$defaultGenre = 'Horor, Thriller';
+$defaultDirector = 'Unknown';
+$defaultCast = 'Unknown';
+
+$title = $movie['title'] ?? $defaultTitle;
+$posterPath = $movie['poster'] ?? $defaultPoster;
+$releaseYear = $movie['release_year'] ?? $defaultYear;
+$genre = $movie['genre'] ?? $defaultGenre;
+$director = $movie['director'] ?? $defaultDirector;
+$cast = $movie['cast'] ?? $defaultCast;
+
+// 🔥 FIXED: Render HTML untuk SEMUA ulasan
+function generate_reviews_html($reviews, $default_user_name) {
+    ob_start();
+    echo "<!-- DEBUG: Rendering " . count($reviews) . " reviews -->\n";
+    if (count($reviews) > 0):
+        foreach ($reviews as $review): ?>
+            <div class="review-item">
+                <div class="rating-display">
+                    <?php
+                        $starHtml = '';
+                        for ($i = 1; $i <= 5; $i++) {
+                            $color = $i <= $review['rating'] ? 'var(--star-gold)' : '#444';
+                            $starHtml .= '<i class="fas fa-star" style="color: ' . $color . '; font-size: 1.1rem;"></i>';
+                        }
+                        echo $starHtml;
+                    ?>
+                </div>
+                <p><?php echo htmlspecialchars($review['review_text'] ?: '(Tidak ada ulasan tertulis)'); ?></p>
+                <div class="reviewer-info">
+                    Oleh: <?php echo htmlspecialchars($review['display_name']); ?> 
+                    - 
+                    <?php echo date('d M Y, H:i', strtotime($review['created_at'])); ?>
+                </div>
+            </div>
+        <?php endforeach;
+    else: ?>
+        <p style="color:#777; font-style: italic;">Belum ada ulasan untuk film ini.</p>
+    <?php endif;
+
+    return ob_get_clean();
 }
 
-// Film Coming Soon belum punya halaman ulasan
-if (($movie['status'] ?? 'released') === 'coming_soon') {
-    header('Location: ' . $homeUrl);
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['is_ajax']) && $_POST['is_ajax'] == 1) {
+    header('Content-Type: application/json; charset=utf-8');
+
+    $response = ['success' => false, 'message' => ''];
+    $rating = (float)($_POST['rating'] ?? 0);
+    $reviewText = trim($_POST['reviewText'] ?? '');
+
+    if ($rating < 1 || $rating > 5) {
+        $response['message'] = 'Rating harus diisi antara 1 sampai 5 bintang!';
+        echo json_encode($response);
+        exit;
+    }
+
+    try {
+        $sql = "INSERT INTO reviews (movie_id, user_id, rating, review_text, created_at, updated_at) 
+                VALUES (?, ?, ?, ?, NOW(), NOW())";
+        
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([$MOVIE_ID, $USER_ID, $rating, $reviewText]);
+
+        $response['success'] = true;
+        $response['message'] = 'Ulasan Anda berhasil ditambahkan!';
+
+    } catch (PDOException $e) {
+        $response['message'] = 'Error Database saat menyimpan ulasan: ' . $e->getMessage();
+    }
+
+    echo json_encode($response);
     exit;
 }
 
-// ---------- Ambil SEMUA ulasan film ini (terbaru di atas) ----------
-$sql = "SELECT r.*, COALESCE(u.full_name, u.username, r.user_name, 'Pengguna CineScope') AS display_name
-        FROM reviews r
-        LEFT JOIN users u ON u.id = r.user_id
-        WHERE r.movie_id = :mid
-        ORDER BY r.id DESC";
-try {
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute(array(':mid' => $movieId));
-} catch (PDOException $e) {
-    // Fallback jika kolom full_name / user_name tidak ada di database
-    $sql = str_replace("COALESCE(u.full_name, u.username, r.user_name, 'Pengguna CineScope')", "COALESCE(u.username, 'Pengguna CineScope')", $sql);
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute(array(':mid' => $movieId));
-}
-$reviews = $stmt->fetchAll(PDO::FETCH_ASSOC);
+// 🔥 FIXED: Ambil SEMUA ulasan dari DATABASE
+$allReviewsStmt = $pdo->prepare("
+    SELECT r.id, r.movie_id, r.user_id, r.rating, r.review_text, r.created_at, r.user_name as review_user_name,
+    COALESCE(u.full_name, u.username, r.user_name, 'Pengguna CineScope') as display_name
+    FROM reviews r
+    LEFT JOIN users u ON r.user_id = u.id
+    WHERE r.movie_id = ?
+    ORDER BY r.created_at DESC
+");
+$allReviewsStmt->execute([$MOVIE_ID]);
+$allReviews = $allReviewsStmt->fetchAll(PDO::FETCH_ASSOC);
 
-$totalReviews = count($reviews);
-$sumRating = 0;
-foreach ($reviews as $rv) {
-    $sumRating += (int)$rv['rating'];
-}
-$avgRating    = $totalReviews ? $sumRating / $totalReviews : 0;
-$posterPath   = cs_getPosterPath($movie['poster'] ?? '');
-$trailerHref  = cs_trailerHref($movie['trailer_url'] ?? '');
+echo "<!-- DEBUG: Fetched " . count($allReviews) . " reviews from database -->\n";
 
-// ---------- Mode cek: buka halaman ini dengan tambahan ?debug=1 di URL ----------
-$debug = isset($_GET['debug']);
-$debugInfo = array();
-if ($debug) {
-    try {
-        $debugInfo['database aktif']        = $pdo->query("SELECT DATABASE()")->fetchColumn();
-        $debugInfo['ulasan per movie_id']   = $pdo->query("SELECT movie_id, COUNT(*) AS jumlah FROM reviews GROUP BY movie_id ORDER BY movie_id")->fetchAll(PDO::FETCH_ASSOC);
-    } catch (PDOException $e) {
-        $debugInfo['error'] = $e->getMessage();
-    }
-}
+$totalReviews = count($allReviews);
+$avgRating = $totalReviews > 0 ? array_sum(array_column($allReviews, 'rating')) / $totalReviews : 0;
+$formattedAvgRating = $avgRating > 0 ? number_format($avgRating, 1) : '0.0';
 
-$metaParts = array_filter(array(
-    $movie['release_year'] ?? '',
-    $movie['genre'] ?? '',
-    $movie['duration'] ?? '',
-), function ($v) { return trim((string)$v) !== ''; });
+echo "<!-- DEBUG: Total Reviews: {$totalReviews}, Avg Rating: {$formattedAvgRating} -->\n";
+
+if (isset($_GET['fetch_data']) && $_GET['fetch_data'] == 1) {
+    header('Content-Type: application/json; charset=utf-8');
+    $response = [
+        'averageRating' => $formattedAvgRating,
+        'totalReviews' => $totalReviews,
+        'myReviewsHtml' => generate_reviews_html($allReviews, $CURRENT_USER_NAME),
+    ];
+    echo json_encode($response);
+    exit;
+}
 ?>
 <!DOCTYPE html>
 <html lang="id">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=1200, initial-scale=0.35, user-scalable=yes">
-    <title><?= cs_e($movie['title']) ?> | CineScope</title>
+    <title>Beri Review Film <?= htmlspecialchars($title); ?> - CineScope</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+
     <style>
-        :root { --primary-color: #e50914; --background-dark: #0a0a0a; --card-dark: #1a1a1a; --text-light: #ffffff; --star-gold: #ffc107; }
+        :root {
+            --primary-color: #e50914;
+            --background-dark: #0a0a0a;
+            --card-dark: #1a1a1a;
+            --text-light: #ffffff;
+            --star-gold: #ffc107;
+            --input-bg: #2d2d2d;
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Inter', sans-serif; background-color: var(--background-dark); color: var(--text-light); line-height: 1.6; padding: 20px; }
-        .container { max-width: 900px; margin: 0 auto; padding: 20px; background-color: var(--card-dark); border-radius: 12px; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
-        .back-to-home { display: inline-block; background-color: #333; color: var(--text-light); padding: 8px 15px; border-radius: 5px; text-decoration: none; margin-bottom: 20px; transition: background-color 0.3s; cursor: pointer; border: none; font-weight: 600; font-family: inherit; font-size: 1em; }
+        .container { max-width: 900px; margin: 0 auto; padding: 20px; background-color: var(--card-dark); border-radius: 12px; box-shadow: 0 0 20px rgba(0, 0, 0, 0.5); }
+        
+        .debug-info {
+            background: #2d2d2d;
+            border: 2px solid #e50914;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        
+        .debug-info h3 {
+            color: #e50914;
+            margin-bottom: 10px;
+        }
+        
+        .debug-info p {
+            color: #0f0;
+            margin: 5px 0;
+        }
+        
+        .back-to-home {
+            display: inline-block;
+            background-color: #333;
+            color: var(--text-light);
+            padding: 8px 15px;
+            border-radius: 5px;
+            text-decoration: none;
+            margin-bottom: 20px;
+            transition: background-color 0.3s;
+            cursor: pointer;
+            border: none;
+            font-weight: 600;
+        }
         .back-to-home:hover { background-color: #555; }
+
         .movie-header { display: flex; gap: 20px; margin-bottom: 30px; align-items: flex-start; }
-        .movie-poster { width: 150px; height: 225px; object-fit: cover; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
-        .poster-placeholder { width: 150px; height: 225px; background: linear-gradient(135deg, #333 0%, #555 100%); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 3em; color: #888; }
+        .movie-poster { width: 150px; height: 225px; object-fit: cover; border-radius: 8px; }
         .movie-info h1 { color: var(--primary-color); margin-bottom: 5px; font-size: 2em; }
         .movie-info p { color: #ccc; margin-bottom: 10px; }
+
         .rating-summary { display: flex; align-items: center; gap: 15px; margin-top: 15px; padding: 10px 0; border-top: 1px solid #333; }
         .rating-box { background-color: #333; padding: 8px 15px; border-radius: 5px; text-align: center; }
         .rating-box .score { font-size: 1.8em; font-weight: 700; color: var(--star-gold); line-height: 1; }
         .rating-box .count { font-size: 0.8em; color: #aaa; margin-top: 2px; }
+
+        .review-form-section { margin-bottom: 40px; padding: 20px; border: 1px solid #333; border-radius: 8px; }
+        .review-form-section h2 { font-size: 1.8em; color: var(--primary-color); margin-bottom: 20px; }
+        
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-light); }
+        
+        textarea {
+            width: 100%; min-height: 120px; padding: 10px; border-radius: 4px; border: 1px solid #444;
+            background-color: var(--input-bg); color: var(--text-light); resize: vertical;
+        }
+
+        .submit-btn {
+            background-color: var(--primary-color); color: var(--text-light); padding: 10px 25px;
+            border: none; border-radius: 5px; font-weight: 600; cursor: pointer; transition: background-color 0.3s;
+        }
+        .submit-btn:hover { background-color: #f00; }
+
+        .like-btn { background-color: #3498db; transition: background-color 0.3s; border: none; padding: 10px 15px; }
+        .like-btn:hover { background-color: #2980b9; }
+        .liked { background-color: var(--primary-color); }
+        .liked:hover { background-color: #c0392b; }
+        
+        .review-link { background-color: #2ecc71; }
+        .review-link:hover { background-color: #27ae60; }
+        
+        .trailer-btn { background-color: #9b59b6; }
+        .trailer-btn:hover { background-color: #8e44ad; }
+
+        .star-rating { display: flex; flex-direction: row-reverse; justify-content: flex-end; }
+        .star-rating input { display: none; }
+        .star-rating label { font-size: 2.5em; color: #444; cursor: pointer; padding: 0 5px; transition: color 0.2s; }
+        .star-rating label:hover,
+        .star-rating label:hover ~ label,
+        .star-rating input:checked ~ label { color: var(--star-gold); }
+        
         .my-reviews-section { margin-bottom: 40px; }
         .my-reviews-section h2 { font-size: 1.8em; color: var(--text-light); margin-bottom: 25px; border-bottom: 2px solid var(--star-gold); padding-bottom: 5px; }
-        .review-item { background-color: #333; padding: 15px 20px; border-radius: 6px; margin-bottom: 15px; border-left: 5px solid var(--primary-color); }
-        .rating-display { margin-bottom: 10px; }
-        .review-item p { margin-bottom: 10px; font-size: 1em; color: #e0e0e0; white-space: pre-line; word-break: break-word; }
-        .reviewer-info { font-size: 0.85em; color: #aaa; text-align: right; border-top: 1px dashed #555; padding-top: 5px; }
 
-        /* ---- Tombol Trailer ---- */
-        .movie-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 15px; }
-        .btn { display: inline-block; padding: 8px 18px; border-radius: 5px; border: none; font-weight: 600; font-family: inherit; font-size: 0.95em; cursor: pointer; text-decoration: none; color: #fff; transition: background-color .3s; }
-        .btn-action { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; font-size: 1em; border-radius: 6px; }
-        .btn-trailer { background: var(--primary-color); }
-        .btn-trailer:hover { background: #b20710; }
-        .btn-trailer.disabled { background: #444; color: #888; cursor: not-allowed; pointer-events: none; }
+        .review-item {
+            background-color: #333; padding: 15px 20px; border-radius: 6px; margin-bottom: 15px;
+            border-left: 5px solid var(--primary-color); 
+        }
+        .rating-display { margin-bottom: 10px; }
+        .review-item p { margin-bottom: 10px; font-size: 1em; color: #e0e0e0; }
+        .reviewer-info { font-size: 0.85em; color: #aaa; text-align: right; border-top: 1px dashed #555; padding-top: 5px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <a class="back-to-home" href="<?= cs_e($homeUrl) ?>"><i class="fas fa-arrow-left"></i> Kembali</a>
-
+        
+       
+        
+        <button class="back-to-home" onclick="window.history.back()">
+            <i class="fas fa-arrow-left"></i> Kembali
+        </button>
         <section class="movie-header">
-            <?php if ($posterPath): ?>
-                <img src="<?= cs_e($posterPath) ?>" alt="Poster" class="movie-poster">
-            <?php else: ?>
-                <div class="poster-placeholder"><i class="fas fa-film"></i></div>
-            <?php endif; ?>
+            <img src="<?= htmlspecialchars($posterPath); ?>" alt="Poster Film <?= htmlspecialchars($title); ?>" class="movie-poster">
             <div class="movie-info">
-                <h1><?= cs_e($movie['title']) ?></h1>
-                <p><?= cs_e(implode(' • ', $metaParts)) ?></p>
-                <?php if (!empty($movie['synopsis'])): ?><p><?= cs_e($movie['synopsis']) ?></p><?php endif; ?>
-                <div class="rating-summary">
-                    <div class="rating-box"><div class="score"><?= $totalReviews > 0 ? number_format($avgRating, 1) . '/5' : '-' ?></div><div class="count">Rata-Rata</div></div>
-                    <div class="rating-box"><div class="score"><?= $totalReviews ?></div><div class="count">Total Ulasan</div></div>
+                <h1><?= htmlspecialchars($title); ?></h1>
+                <p><?= htmlspecialchars($releaseYear); ?> • <?= htmlspecialchars($genre); ?> • 1h 35m</p>
+                <p>Sutradara: <?= htmlspecialchars($director); ?> • Pemain: <?= htmlspecialchars($cast); ?></p>
+                
+                <div style="display: flex; gap: 10px; align-items: center; margin-top: 10px;">
+                    <button id="likeButton" class="submit-btn like-btn" data-movie-id="REST_AREA">
+                        <i class="fas fa-thumbs-up"></i> <span id="likeText">Suka</span>
+                    </button>
+                    <a href="daftar tonton.php" class="submit-btn" style="text-decoration: none; display: inline-block; background-color: #333;"><i class="fas fa-bookmark"></i> Daftar Tonton</a>
+                    
+                    <a href="ulasan rest area.html" class="submit-btn review-link" style="text-decoration: none; display: inline-block;">
+                        <i class="fas fa-eye"></i> Lihat Semua Ulasan
+                    </a>
                 </div>
-
-                <!-- Tombol Trailer -->
-                <div class="movie-actions">
-                    <?php if ($trailerHref): ?>
-                        <a class="btn btn-trailer btn-action" href="<?= cs_e($trailerHref) ?>" target="_blank" rel="noopener"><i class="fas fa-play"></i> Trailer</a>
-                    <?php else: ?>
-                        <span class="btn btn-trailer btn-action disabled" title="Trailer belum diunggah oleh admin"><i class="fas fa-play"></i> Trailer</span>
-                    <?php endif; ?>
+                
+                <div class="rating-summary" style="margin-top: 25px;">
+                    <div class="rating-box">
+                        <div class="score" id="averageRating"><?php echo $formattedAvgRating; ?>/5</div>
+                        <div class="count">Rata-Rata</div>
+                    </div>
+                    <div class="rating-box">
+                        <div class="score" id="reviewCount"><?php echo $totalReviews; ?></div>
+                        <div class="count">Total Ulasan</div>
+                    </div>
+                    <button id="trailerButton" class="submit-btn trailer-btn" style="padding: 15px 20px;">
+                        <i class="fas fa-play-circle"></i> Tonton Trailer
+                    </button>
                 </div>
             </div>
         </section>
 
-        <!-- ===== Daftar ulasan (hanya dilihat) ===== -->
-        <section class="my-reviews-section" id="reviews">
-            <h2><i class="fas fa-comments"></i> Semua Ulasan</h2>
+        <section class="review-form-section">
+            <h2><i class="fas fa-edit"></i> Berikan Ulasan dan Rating Anda</h2>
+            <form id="reviewForm">
+                
+                <div class="form-group">
+                    <label>Rating Anda (1-5 Bintang)</label>
+                    <div class="star-rating" id="ratingInput">
+                        <input type="radio" id="star5" name="rating" value="5" required><label for="star5" title="Sangat Suka"><i class="fas fa-star"></i></label>
+                        <input type="radio" id="star4" name="rating" value="4"><label for="star4" title="Bagus"><i class="fas fa-star"></i></label>
+                        <input type="radio" id="star3" name="rating" value="3"><label for="star3" title="Lumayan"><i class="fas fa-star"></i></label>
+                        <input type="radio" id="star2" name="rating" value="2"><label for="star2" title="Kurang"><i class="fas fa-star"></i></label>
+                        <input type="radio" id="star1" name="rating" value="1"><label for="star1" title="Buruk"><i class="fas fa-star"></i></label>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="reviewText">Ulasan Anda:</label>
+                    <textarea id="reviewText" placeholder="Tuliskan ulasan Anda tentang film ini di sini..."></textarea>
+                </div>
+                
+                <button type="submit" class="submit-btn"><i class="fas fa-paper-plane"></i> Kirim Ulasan</button>
+            </form>
+        </section>
+        
+        <section class="my-reviews-section">
+            <h2><i class="fas fa-comments"></i> Semua Ulasan (<?php echo $totalReviews; ?>)</h2>
             <div id="my-reviews-display">
-                <?php if ($totalReviews > 0): ?>
-                    <?php foreach ($reviews as $review): ?>
-                        <div class="review-item" id="review-<?= (int)$review['id'] ?>">
-                            <div class="rating-display">
-                                <?php for ($i = 1; $i <= 5; $i++): ?>
-                                    <i class="fas fa-star" style="color: <?= $i <= (int)$review['rating'] ? 'var(--star-gold)' : '#444' ?>; font-size: 1.1rem;"></i>
-                                <?php endfor; ?>
-                            </div>
-                            <p><?= cs_e(($review['review_text'] !== '' && $review['review_text'] !== null) ? $review['review_text'] : '(Tidak ada ulasan tertulis)') ?></p>
-                            <div class="reviewer-info">
-                                Oleh: <?= cs_e($review['display_name']) ?>
-                                <?php if (!empty($review['created_at'])): ?> - <?= date('d M Y, H:i', strtotime($review['created_at'])) ?><?php endif; ?>
-                            </div>
-                        </div>
-                    <?php endforeach; ?>
-                <?php else: ?>
-                    <p style="color:#777; font-style: italic;">Belum ada ulasan untuk film ini.</p>
-                <?php endif; ?>
+                <?php echo generate_reviews_html($allReviews, $CURRENT_USER_NAME); ?>
             </div>
         </section>
-
-        <?php if ($debug): ?>
-        <section class="my-reviews-section" id="debug-info">
-            <h2><i class="fas fa-bug"></i> Info Cek</h2>
-            <div class="review-item">
-                <p style="white-space:pre-wrap; font-family:Consolas,monospace; font-size:.9em;"><?= cs_e(
-                    "File ini         : " . basename(__FILE__) . "\n" .
-                    "ID film dibaca   : " . $movieId . " (" . $movie['title'] . ")\n" .
-                    "Ulasan terbaca   : " . $totalReviews . "\n" .
-                    print_r($debugInfo, true)
-                ) ?></p>
-            </div>
-        </section>
-        <?php endif; ?>
+        
     </div>
+
+    <script>
+        console.log("🔍 DEBUG: Script loaded");
+        console.log("🔍 Initial Review Count:", <?php echo $totalReviews; ?>);
+        console.log("🔍 Initial Avg Rating:", "<?php echo $formattedAvgRating; ?>");
+        
+        const CURRENT_USER_NAME = '<?php echo addslashes($CURRENT_USER_NAME); ?>'; 
+        const WATCHLIST_KEY = 'cineScopeWatchlist';
+        const CURRENT_USER_EMAIL = localStorage.getItem('cineScopeCurrentUser') || 'guest@cinescope.com'; 
+
+        const MOVIE_DATA = {
+            id: 'REST_AREA',
+            title: '<?= addslashes($title); ?>',
+            poster: '<?= addslashes($posterPath); ?>',
+            genre: '<?= addslashes($genre); ?>'
+        };
+
+        const reviewForm = document.getElementById('reviewForm');
+        const myReviewsDisplay = document.getElementById('my-reviews-display');
+        const reviewCountSpan = document.getElementById('reviewCount');
+        const averageRatingSpan = document.getElementById('averageRating');
+        const likeButton = document.getElementById('likeButton');
+        const likeText = document.getElementById('likeText');
+        const trailerButton = document.getElementById('trailerButton');
+
+        const TRAILER_URL = 'uploads/videos/Rest_Area_-_Official_Trailer.mp4';
+
+        function getWatchlist() {
+            const watchlistData = JSON.parse(localStorage.getItem(WATCHLIST_KEY)) || {};
+            return watchlistData[CURRENT_USER_EMAIL] || [];
+        }
+
+        function saveWatchlist(watchlist) {
+            const watchlistData = JSON.parse(localStorage.getItem(WATCHLIST_KEY)) || {};
+            watchlistData[CURRENT_USER_EMAIL] = watchlist;
+            localStorage.setItem(WATCHLIST_KEY, JSON.stringify(watchlistData));
+        }
+
+        function updateLikeButtonState(watchlist) {
+            const isLiked = watchlist.some(movie => movie.id === MOVIE_DATA.id);
+            
+            if (isLiked) {
+                likeButton.classList.add('liked');
+                likeText.textContent = 'Disukai';
+                likeButton.querySelector('i').className = 'fas fa-heart'; 
+            } else {
+                likeButton.classList.remove('liked');
+                likeText.textContent = 'Suka';
+                likeButton.querySelector('i').className = 'fas fa-thumbs-up'; 
+            }
+        }
+
+        likeButton.addEventListener('click', function() {
+            let watchlist = getWatchlist();
+            const isLiked = watchlist.some(movie => movie.id === MOVIE_DATA.id);
+
+            if (isLiked) {
+                watchlist = watchlist.filter(movie => movie.id !== MOVIE_DATA.id);
+                alert(`Film "${MOVIE_DATA.title}" dihapus dari Daftar Tonton.`);
+            } else {
+                watchlist.push(MOVIE_DATA);
+                alert(`Film "${MOVIE_DATA.title}" ditambahkan ke Daftar Tonton!`);
+            }
+
+            saveWatchlist(watchlist);
+            updateLikeButtonState(watchlist);
+        });
+
+        trailerButton.addEventListener('click', function() {
+            window.open(TRAILER_URL, '_blank');
+        });
+
+        function loadReviewsAndStats() {
+            console.log("🔍 Loading reviews from database...");
+            fetch('rest area.php?fetch_data=1')
+            .then(response => response.json())
+            .then(data => {
+                console.log("🔍 Data received:", data);
+                averageRatingSpan.textContent = data.averageRating + '/5';
+                reviewCountSpan.textContent = data.totalReviews;
+                document.getElementById('my-reviews-display').innerHTML = data.myReviewsHtml;
+                
+                const sectionTitle = document.querySelector('.my-reviews-section h2');
+                if (sectionTitle) {
+                    sectionTitle.innerHTML = `<i class="fas fa-comments"></i> Semua Ulasan (${data.totalReviews})`;
+                }
+                console.log("🔍 Reviews updated successfully");
+            })
+            .catch(err => {
+                console.error('❌ Failed to load reviews:', err);
+            });
+        }
+
+        reviewForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+
+            const selectedRating = document.querySelector('input[name="rating"]:checked');
+            const reviewText = document.getElementById('reviewText').value.trim();
+
+            if (!selectedRating) {
+                alert("Harap berikan rating (bintang) sebelum mengirim ulasan!");
+                return;
+            }
+
+            const formData = new URLSearchParams();
+            formData.append('is_ajax', 1);
+            formData.append('rating', selectedRating.value);
+            formData.append('reviewText', reviewText);
+
+            const submitBtn = this.querySelector('button[type="submit"]');
+            const originalHtml = submitBtn.innerHTML;
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Mengirim...';
+
+            console.log("🔍 Submitting review...");
+            
+            fetch('rest area.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                body: formData.toString()
+            })
+            .then(r => r.json())
+            .then(data => {
+                console.log("🔍 Submit response:", data);
+                if (data.success) {
+                    alert('✅ Review berhasil ditambahkan!');
+                    document.getElementById('reviewText').value = '';
+                    document.querySelectorAll('input[name="rating"]').forEach(i => i.checked = false);
+                    
+                    loadReviewsAndStats();
+                } else {
+                    alert('❌ Gagal menyimpan ulasan: ' + data.message);
+                }
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = originalHtml;
+            })
+            .catch(err => {
+                console.error('❌ Error submitting review:', err);
+                alert('❌ Terjadi kesalahan jaringan saat mengirim ulasan.');
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = originalHtml;
+            });
+        });
+
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log("🔍 Page loaded, initializing...");
+            loadReviewsAndStats();
+            const initialWatchlist = getWatchlist();
+            updateLikeButtonState(initialWatchlist);
+        });
+    </script>
+
 </body>
 </html>

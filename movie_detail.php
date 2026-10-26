@@ -10,7 +10,7 @@ session_start();
 
 // Database Configuration
 $host = '127.0.0.1';
-$dbname = 'movie_review_db';
+$dbname = 'cinescope';
 $username = 'root';
 $password = '';
 

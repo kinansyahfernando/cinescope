@@ -8,10 +8,11 @@ error_reporting(E_ALL);
 ini_set('display_errors', 0); // Disable untuk production
 
 // Database connection
-$host = '127.0.0.1';
-$dbname = 'movie_review_db';
+
+$host     = '127.0.0.1';   // atau 'localhost'
+$dbname   = 'cinescope';   // nama database di Laragon
 $username = 'root';
-$password = '';
+$password = '';            // default Laragon kosong
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);

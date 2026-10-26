@@ -21,10 +21,11 @@ ini_set('display_errors', 1);
 file_put_contents('review_log.txt', "\n=== " . date('Y-m-d H:i:s') . " ===\n", FILE_APPEND);
 
 // Database Configuration
-$host = '127.0.0.1';
-$dbname = 'movie_review_db';
-$username = 'root';
-$password = '';
+$host = 'sql113.infinityfree.com';
+$dbname = 'if0_43070738_cinescope';
+$username = 'if0_43070738';
+$password = 'lkZExS8KI2';
+
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);

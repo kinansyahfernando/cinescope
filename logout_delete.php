@@ -10,10 +10,12 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 // Koneksi database
-$host = "127.0.0.1";
-$dbname = "movie_review_db";
-$username = "root";
-$password = "";
+
+$host     = '127.0.0.1';   // atau 'localhost'
+$dbname   = 'cinescope';   // nama database di Laragon
+$username = 'root';
+$password = '';            // default Laragon kosong
+
 
 try {
     $pdo = new PDO(

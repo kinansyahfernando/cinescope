@@ -1,8 +1,10 @@
 <?php
-$host = 'localhost';
-$dbname = 'movie_review_db';
+
+$host     = '127.0.0.1';   // atau 'localhost'
+$dbname   = 'cinescope';   // nama database di Laragon
 $username = 'root';
-$password = '';
+$password = '';            // default Laragon kosong
+
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);

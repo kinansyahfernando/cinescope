@@ -6,10 +6,11 @@ header("Access-Control-Allow-Origin: *");
 header("Content-Type: application/json; charset=utf-8");
 
 // Database Configuration
-$host = '127.0.0.1';
-$dbname = 'movie_review_db';
+
+$host     = '127.0.0.1';   // atau 'localhost'
+$dbname   = 'cinescope';   // nama database di Laragon
 $username = 'root';
-$password = ''; // Kosongkan jika Anda tidak menggunakan password di XAMPP
+$password = '';            // default Laragon kosong
 
 // Koneksi Database
 try {

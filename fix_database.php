@@ -2,11 +2,11 @@
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-$host = 'localhost';
-$dbname = 'movie_review_db';
-$username = 'root';
-$password = '';
 
+$host     = '127.0.0.1';   // atau 'localhost'
+$dbname   = 'cinescope';   // nama database di Laragon
+$username = 'root';
+$password = '';            // default Laragon kosong
 ?>
 <!DOCTYPE html>
 <html lang="id">

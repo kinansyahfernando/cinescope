@@ -18,10 +18,12 @@ ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
 // DATABASE CONNECTION
-$db_host = "127.0.0.1";
-$db_name = "movie_review_db";
-$db_user = "root";
-$db_pass = "";
+
+$host     = '127.0.0.1';   // atau 'localhost'
+$dbname   = 'cinescope';   // nama database di Laragon
+$username = 'root';
+$password = '';            // default Laragon kosong
+
 
 try {
     $pdo = new PDO(

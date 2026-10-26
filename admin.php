@@ -5,7 +5,7 @@ ini_set('display_errors', 1);
 session_start();
 
 $host     = '127.0.0.1';   // atau 'localhost'
-$dbname   = 'cinescope';   // nama database di Laragon
+$dbname   = 'cinescope';   // SAMA dengan config.php, index.php, user.php (ubah di sini kalau nama databasemu lain)
 $username = 'root';
 $password = '';            // default Laragon kosong
 
@@ -33,6 +33,64 @@ try {
 
 foreach (['uploads', 'uploads/posters', 'uploads/videos'] as $dir) {
     if (!file_exists($dir)) @mkdir($dir, 0777, true);
+}
+
+// ============ FILM CONTOH (disimpan di database, jadi muncul di admin, beranda, dan halaman user) ============
+function sampleMovieList() {
+    return array(
+        array('Bayangan Senja',        2024, 112, 'Drama',       'Raka Pradipta',  'Dimas Anggara, Laras Wulandari', 'Seorang fotografer kembali ke kota kecilnya dan menemukan rahasia keluarga yang lama terkubur.'),
+        array('Langit Terakhir',       2025, 128, 'Fantasi',     'Maya Kusuma',    'Arka Wijaya, Nadia Safira',      'Sebuah kerajaan di atas awan terancam runtuh, dan hanya seorang anak penjaga mercusuar yang bisa menyelamatkannya.'),
+        array('Jejak di Lorong Sunyi', 2023, 105, 'Misteri',     'Bagas Hartono',  'Reza Mahendra, Tika Permata',    'Satu per satu penghuni gang tua menghilang, dan seorang jurnalis muda mulai menyelidikinya.'),
+        array('Kota Tanpa Nama',       2024, 118, 'Aksi',        'Yoga Santosa',   'Fajar Nugraha, Sinta Maheswari', 'Mantan agen rahasia dipaksa kembali bertugas ketika kota tempatnya bersembunyi diserang.'),
+        array('Rumah di Ujung Jalan',  2022, 98,  'Horor',       'Dewi Anggraini', 'Bimo Setiawan, Citra Ayudia',    'Keluarga yang baru pindah mulai mendengar suara aneh dari rumah kosong di ujung jalan.'),
+        array('Cinta Dua Musim',       2025, 109, 'Romantis',    'Intan Maharani', 'Rafi Aditya, Keisha Putri',      'Dua orang asing bertemu di musim hujan dan harus memilih saat kemarau tiba.'),
+        array('Tawa di Perantauan',    2023, 101, 'Komedi',      'Hendra Wibowo',  'Joko Prasetyo, Mira Lestari',    'Tiga sahabat merantau ke Jakarta dengan modal nekat dan menghadapi kekacauan demi kekacauan.'),
+        array('Samudra Biru',          2024, 121, 'Petualangan', 'Galih Ramadhan', 'Satria Mahesa, Dinda Kirana',    'Ekspedisi mencari pulau legenda membawa sekelompok remaja melewati badai dan teka-teki kuno.'),
+    );
+}
+
+function seedSampleMovies(PDO $pdo) {
+    $cols  = $pdo->query("SHOW COLUMNS FROM movies")->fetchAll(PDO::FETCH_COLUMN);
+    $old   = '2000-01-01 00:00:00';   // tanggal lama, supaya tidak menyalip film asli yang baru diupload
+    foreach (sampleMovieList() as $d) {
+        $check = $pdo->prepare("SELECT COUNT(*) FROM movies WHERE title = ?");
+        $check->execute(array($d[0]));
+        if ((int)$check->fetchColumn() > 0) continue;   // judul sudah ada -> lewati
+
+        $data = array(
+            'title' => $d[0], 'release_year' => $d[1], 'duration' => $d[2], 'genre' => $d[3],
+            'director' => $d[4], 'cast' => $d[5], 'synopsis' => $d[6],
+            'poster' => '', 'trailer_url' => '', 'status' => 'released',
+            'average_rating' => 0, 'created_at' => $old, 'released_at' => $old,
+        );
+        $data = array_intersect_key($data, array_flip($cols));   // hanya kolom yang benar-benar ada
+
+        $names = array();
+        foreach (array_keys($data) as $c) $names[] = '`' . $c . '`';
+        $sql = 'INSERT INTO movies (' . implode(',', $names) . ') VALUES (' . implode(',', array_fill(0, count($data), '?')) . ')';
+        $pdo->prepare($sql)->execute(array_values($data));
+    }
+}
+
+// Isi otomatis SEKALI saat admin.php pertama dibuka (penanda: uploads/.sample_seeded).
+// Film yang kamu hapus lewat admin tidak akan muncul lagi.
+$sampleFlag = __DIR__ . '/uploads/.sample_seeded';
+if (!file_exists($sampleFlag)) {
+    try {
+        seedSampleMovies($pdo);
+        @file_put_contents($sampleFlag, date('c'));
+    } catch (PDOException $e) {
+        // gagal (mis. tabel movies belum ada) -> coba lagi di akses berikutnya
+    }
+}
+
+// Bersihkan penanda teks lama dari sinopsis (dari versi sebelumnya), sekali saja.
+$cleanFlag = __DIR__ . '/uploads/.sample_cleaned';
+if (!file_exists($cleanFlag)) {
+    try {
+        $pdo->exec("UPDATE movies SET synopsis = TRIM(REPLACE(synopsis, '[DUMMY]', '')) WHERE synopsis LIKE '%[DUMMY]%'");
+        @file_put_contents($cleanFlag, date('c'));
+    } catch (PDOException $e) {}
 }
 
 $message = '';
