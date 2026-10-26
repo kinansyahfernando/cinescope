@@ -29,7 +29,7 @@ function generateMovieCardLink($movie) {
         5 => 'tukar takdir.php',
         6 => 'rangga & cinta.php'
     );
-    return isset($movieLinks[$movie['id']]) ? $movieLinks[$movie['id']] : 'all_reviews.php?id=' . (int)$movie['id'];
+    return isset($movieLinks[$movie['id']]) ? $movieLinks[$movie['id']] : 'Dilan%201990.php?id=' . (int)$movie['id'];   // film dummy / upload admin: tampilan sama dengan film lain (halaman ini generik lewat ?id=)
 }
 
 // ==========================================

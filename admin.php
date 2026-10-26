@@ -17,6 +17,49 @@ try {
     die("Database Error: " . $e->getMessage());
 }
 
+// ============ HANYA ADMIN ============
+// Sebelumnya halaman ini bisa dibuka siapa saja tanpa login.
+if (empty($_SESSION['user_id'])) {
+    header('Location: login.php');
+    exit;
+}
+if (($_SESSION['role'] ?? '') !== 'admin') {
+    http_response_code(403);
+    die('<!DOCTYPE html><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><body style="font-family:sans-serif;background:#0a0a0a;color:#fff;text-align:center;padding:60px 20px"><h1>403 - Akses ditolak</h1><p style="color:#aaa;margin:12px 0 20px">Halaman ini khusus admin.</p><a style="color:#e50914;font-weight:700" href="user.php">&larr; Kembali</a></body>');
+}
+
+// Kolom angka MySQL menolak string kosong ('') -> ubah jadi NULL. Inilah penyebab upload film gagal
+// kalau "Durasi" tidak diisi.
+function nzi($v) {
+    $v = trim((string)$v);
+    return ($v !== '' && preg_match('/^-?\d+$/', $v)) ? (int)$v : null;
+}
+
+// Simpan poster dengan aman: hanya gambar, nama file bersih (tanpa spasi/karakter aneh).
+// Mengembalikan path baru, atau $fallback jika tidak ada file / file ditolak.
+function savePosterUpload($fallback = '') {
+    global $message, $messageType;
+    if (empty($_FILES['poster']['name'])) return $fallback;
+    if ($_FILES['poster']['error'] !== UPLOAD_ERR_OK) {
+        $message = 'Poster gagal diupload (kode ' . (int)$_FILES['poster']['error'] . '). Cek batas upload_max_filesize di php.ini.';
+        $messageType = 'error';
+        return $fallback;
+    }
+    $ext = strtolower(pathinfo($_FILES['poster']['name'], PATHINFO_EXTENSION));
+    $okMime = class_exists('finfo') ? in_array((new finfo(FILEINFO_MIME_TYPE))->file($_FILES['poster']['tmp_name']), ['image/jpeg', 'image/png', 'image/webp', 'image/gif'], true) : true;
+    if (!in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif'], true) || !$okMime) {
+        $message = 'Poster harus berupa gambar JPG, PNG, WEBP, atau GIF.';
+        $messageType = 'error';
+        return $fallback;
+    }
+    $base = trim(preg_replace('/[^A-Za-z0-9_-]+/', '_', pathinfo($_FILES['poster']['name'], PATHINFO_FILENAME)), '_');
+    $target = 'uploads/posters/' . time() . '_' . ($base !== '' ? substr($base, 0, 50) : 'poster') . '.' . $ext;
+    if (move_uploaded_file($_FILES['poster']['tmp_name'], $target)) return $target;
+    $message = 'Poster gagal disimpan ke folder uploads/posters (cek izin folder).';
+    $messageType = 'error';
+    return $fallback;
+}
+
 // Auto migration
 try {
     $cols = $pdo->query("SHOW COLUMNS FROM movies")->fetchAll(PDO::FETCH_COLUMN);
@@ -147,12 +190,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
 
 // ============ CREATE MOVIE ============
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_movie'])) {
-    $posterPath = '';
-    if (!empty($_FILES['poster']['name']) && $_FILES['poster']['error'] === UPLOAD_ERR_OK) {
-        $posterName = time() . '_' . basename($_FILES['poster']['name']);
-        $posterTarget = 'uploads/posters/' . $posterName;
-        if (move_uploaded_file($_FILES['poster']['tmp_name'], $posterTarget)) $posterPath = $posterTarget;
-    }
+    $posterPath = savePosterUpload('');
+    if ($messageType !== 'error') {   // poster ditolak -> jangan simpan, tampilkan pesan error di form
     $status = normalizeStatus($_POST['status'] ?? 'released');
     $releaseDate = !empty($_POST['release_date']) ? $_POST['release_date'] : null;
 
@@ -160,7 +199,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_movie'])) {
         $sql = "INSERT INTO movies (title, release_year, duration, genre, director, `cast`, synopsis, poster, trailer_url, status, release_date, average_rating, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW())";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
-            $_POST['title'], $_POST['release_year'], $_POST['duration'],
+            $_POST['title'], nzi($_POST['release_year'] ?? ''), nzi($_POST['duration'] ?? ''),
             $_POST['genre'], $_POST['director'], $_POST['cast'] ?? '',
             $_POST['synopsis'], $posterPath, $_POST['trailer_url'],
             $status, $releaseDate
@@ -168,28 +207,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_movie'])) {
     } catch (PDOException $e) {
         $sql = "INSERT INTO movies (title, release_year, duration, genre, director, synopsis, poster, trailer_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())";
         $stmt = $pdo->prepare($sql);
-        $stmt->execute([$_POST['title'], $_POST['release_year'], $_POST['duration'], $_POST['genre'], $_POST['director'], $_POST['synopsis'], $posterPath, $_POST['trailer_url']]);
+        $stmt->execute([$_POST['title'], nzi($_POST['release_year'] ?? ''), nzi($_POST['duration'] ?? ''), $_POST['genre'], $_POST['director'], $_POST['synopsis'], $posterPath, $_POST['trailer_url']]);
     }
     header("Location: admin.php?action=movies&msg=created");
     exit;
+    }
 }
 
 // ============ UPDATE MOVIE ============
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_movie'])) {
     $movieId = (int)$_POST['movie_id'];
     $posterPath = $_POST['existing_poster'] ?? '';
-
-    if (!empty($_FILES['poster']['name']) && $_FILES['poster']['error'] === UPLOAD_ERR_OK) {
-        $posterName = time() . '_' . basename($_FILES['poster']['name']);
-        $posterTarget = 'uploads/posters/' . $posterName;
-        if (move_uploaded_file($_FILES['poster']['tmp_name'], $posterTarget)) $posterPath = $posterTarget;
-    }
+    $posterPath = savePosterUpload($posterPath);
+    if ($messageType !== 'error') {
 
     try {
         $sql = "UPDATE movies SET title=?, release_year=?, duration=?, genre=?, director=?, `cast`=?, synopsis=?, poster=?, trailer_url=?, status=?, release_date=?, updated_at=NOW() WHERE id=?";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
-            $_POST['title'], $_POST['release_year'], $_POST['duration'],
+            $_POST['title'], nzi($_POST['release_year'] ?? ''), nzi($_POST['duration'] ?? ''),
             $_POST['genre'], $_POST['director'], $_POST['cast'] ?? '',
             $_POST['synopsis'], $posterPath, $_POST['trailer_url'],
             normalizeStatus($_POST['status'] ?? 'released'),
@@ -199,12 +235,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_movie'])) {
     } catch (PDOException $e) {
         $sql = "UPDATE movies SET title=?, release_year=?, duration=?, genre=?, director=?, synopsis=?, poster=?, trailer_url=?, updated_at=NOW() WHERE id=?";
         $stmt = $pdo->prepare($sql);
-        $stmt->execute([$_POST['title'], $_POST['release_year'], $_POST['duration'], $_POST['genre'], $_POST['director'], $_POST['synopsis'], $posterPath, $_POST['trailer_url'], $movieId]);
+        $stmt->execute([$_POST['title'], nzi($_POST['release_year'] ?? ''), nzi($_POST['duration'] ?? ''), $_POST['genre'], $_POST['director'], $_POST['synopsis'], $posterPath, $_POST['trailer_url'], $movieId]);
     }
 
     updateMovieAverageRating($pdo, $movieId);
     header("Location: admin.php?action=movies&msg=updated");
     exit;
+    }
 }
 
 // ============ SET STATUS ============

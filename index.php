@@ -25,7 +25,7 @@ function generateMovieCardLink($movie) {
         5 => 'ulasan_tukartakdir.php',
         6 => 'ulasan_rangga&cinta.php'
     );
-    return isset($movieLinks[$movie['id']]) ? $movieLinks[$movie['id']] : 'all_reviews.php?id=' . (int)$movie['id'];
+    return isset($movieLinks[$movie['id']]) ? $movieLinks[$movie['id']] : 'ulasan_sore.php?id=' . (int)$movie['id'];   // film dummy / upload admin: halaman yang sama dengan film lain
 }
 
 // ==========================================

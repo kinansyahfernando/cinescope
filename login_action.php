@@ -32,7 +32,11 @@ try {
         $_SESSION['email']    = $user['email'];
         $_SESSION['role']     = $user['role'];
 
-        header('Location: user.php?login_success=' . urlencode($user['username']));
+        if (($user['role'] ?? '') === 'admin') {
+            header('Location: admin.php');
+        } else {
+            header('Location: user.php?login_success=' . urlencode($user['username']));
+        }
         exit;
     }
 

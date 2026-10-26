@@ -4,7 +4,9 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
 
-$MOVIE_ID = 3; 
+// Halaman ini dipakai Dilan 1990 (ID 3) DAN film lain lewat ?id= (film dummy / film upload admin).
+$MOVIE_ID = isset($_GET['id']) ? (int)$_GET['id'] : 3;
+$IS_DILAN = ($MOVIE_ID === 3);
 
 // 🔥 FIX: Pastikan user_id valid
 $CURRENT_USER_NAME = $_SESSION['username'] ?? $_SESSION['full_name'] ?? 'Pengguna CineScope';
@@ -53,21 +55,43 @@ $stmt = $pdo->prepare("SELECT * FROM movies WHERE id = ?");
 $stmt->execute([$MOVIE_ID]);
 $movie = $stmt->fetch(PDO::FETCH_ASSOC);
 
-$defaultTitle = 'Dilan 1990';
-$defaultPoster = 'uploads/posters/1763311429.png';
-$defaultYear = '2018';
-$defaultGenre = 'Drama, Romantis';
-$defaultDuration = '1h 50m';
-$defaultDirector = 'Fajar Bustomi';
-$defaultCast = 'Iqbaal Ramadhan, Vanesha Prescilla';
+// Film tidak ada di database: untuk film lain tampilkan 404 (Dilan tetap memakai data bawaan di bawah)
+if (!$movie && !$IS_DILAN) {
+    http_response_code(404);
+    die('<!DOCTYPE html><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Film tidak ditemukan - CineScope</title><body style="font-family:sans-serif;background:#0a0a0a;color:#fff;text-align:center;padding:80px 20px"><h1>Film tidak ditemukan</h1><p style="color:#aaa;margin:12px 0 20px">Film yang kamu cari tidak ada atau sudah dihapus.</p><a style="color:#e50914;font-weight:700" href="user.php">&larr; Kembali ke beranda</a></body>');
+}
+
+$defaultTitle    = $IS_DILAN ? 'Dilan 1990' : '';
+$defaultPoster   = $IS_DILAN ? 'uploads/posters/1763311429.png' : '';
+$defaultYear     = $IS_DILAN ? '2018' : '';
+$defaultGenre    = $IS_DILAN ? 'Drama, Romantis' : '';
+$defaultDuration = $IS_DILAN ? '1h 50m' : '';
+$defaultDirector = $IS_DILAN ? 'Fajar Bustomi' : '';
+$defaultCast     = $IS_DILAN ? 'Iqbaal Ramadhan, Vanesha Prescilla' : '';
 
 $title = $movie['title'] ?? $defaultTitle;
-$posterPath = $movie['poster'] ?? $defaultPoster;
+$posterPath = ($movie['poster'] ?? '') !== '' ? $movie['poster'] : $defaultPoster;
 $releaseYear = $movie['release_year'] ?? $defaultYear;
 $genre = $movie['genre'] ?? $defaultGenre;
 $duration = $movie['duration'] ?? $defaultDuration;
-$director = $movie['director'] ?? $defaultDirector;
-$cast = $movie['cast'] ?? $defaultCast;
+if (is_numeric($duration) && $duration !== '') $duration .= ' menit';
+$director = ($movie['director'] ?? '') !== '' ? $movie['director'] : $defaultDirector;
+$cast = ($movie['cast'] ?? '') !== '' ? $movie['cast'] : $defaultCast;
+$synopsis = trim((string)($movie['synopsis'] ?? ''));
+
+// Poster: kalau filenya tidak ada (mis. film dummy belum punya poster) tampilkan kotak placeholder
+$posterOk = ($posterPath !== '' && is_file(__DIR__ . '/' . $posterPath));
+
+// Trailer: Dilan memakai file bawaannya; film lain memakai trailer_url dari admin (URL / file upload)
+$trailerHref = 'uploads/videos/Official Trailer Dilan 1990.mp4';
+if (!$IS_DILAN) {
+    $tu = trim((string)($movie['trailer_url'] ?? ''));
+    $trailerHref = ($tu !== '' && (preg_match('#^https?://#i', $tu) || is_file(__DIR__ . '/' . $tu))) ? $tu : '';
+}
+
+// Link "Lihat Semua Ulasan" + ID watchlist
+$allReviewsLink = $IS_DILAN ? 'ulasan_dilan1990.php' : 'ulasan_sore.php?id=' . $MOVIE_ID;
+$watchId        = $IS_DILAN ? 'DILAN_1990' : 'MOVIE_' . $MOVIE_ID;
 
 // 🔥 FIX: Render HTML untuk SEMUA ulasan - perbaiki rendering bintang
 function generate_reviews_html($reviews, $default_user_name) {
@@ -132,6 +156,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['is_ajax']) && $_POST[
         if (!$executeResult) {
             throw new Exception("❌ Gagal menyimpan ulasan!");
         }
+
+        // Perbarui rata-rata rating film (dipakai halaman admin)
+        try {
+            $pdo->prepare("UPDATE movies SET average_rating = (SELECT COALESCE(ROUND(AVG(rating),1),0) FROM reviews WHERE movie_id = ?) WHERE id = ?")
+                ->execute([$MOVIE_ID, $MOVIE_ID]);
+        } catch (PDOException $e) { /* kolom belum ada: abaikan */ }
         
         $response['success'] = true;
         $response['message'] = 'Ulasan Anda berhasil ditambahkan!';
@@ -236,19 +266,31 @@ if (isset($_GET['fetch_data']) && $_GET['fetch_data'] == 1) {
         </button>
         
         <section class="movie-header">
-            <img src="<?= htmlspecialchars($posterPath); ?>" alt="Poster Film <?= htmlspecialchars($title); ?>" class="movie-poster"> 
+            <?php if ($posterOk): ?>
+                <img src="<?= htmlspecialchars($posterPath); ?>" alt="Poster Film <?= htmlspecialchars($title); ?>" class="movie-poster">
+            <?php else: ?>
+                <div class="movie-poster" style="background: linear-gradient(135deg, #333 0%, #555 100%); display:flex; align-items:center; justify-content:center; font-size:3em; color:#888;"><i class="fas fa-film"></i></div>
+            <?php endif; ?>
             <div class="movie-info">
                 <h1><?= htmlspecialchars($title); ?></h1>
-                <p><?= htmlspecialchars($releaseYear); ?> • <?= htmlspecialchars($genre); ?> • <?= htmlspecialchars($duration); ?></p>
-                <p>Sutradara: <?= htmlspecialchars($director); ?> • Pemain: <?= htmlspecialchars($cast); ?></p>
+                <p><?= htmlspecialchars(implode(' • ', array_filter([(string)$releaseYear, (string)$genre, (string)$duration], function ($v) { return $v !== ''; }))); ?></p>
+                <?php if ($director !== '' || $cast !== ''): ?>
+                    <p><?php
+                        $parts = [];
+                        if ($director !== '') $parts[] = 'Sutradara: ' . htmlspecialchars($director);
+                        if ($cast !== '')     $parts[] = 'Pemain: ' . htmlspecialchars($cast);
+                        echo implode(' • ', $parts);
+                    ?></p>
+                <?php endif; ?>
+                <?php if (!$IS_DILAN && $synopsis !== ''): ?><p><?= htmlspecialchars($synopsis); ?></p><?php endif; ?>
                 
                 <div style="display: flex; gap: 10px; align-items: center; margin-top: 10px;">
-                    <button id="likeButton" class="submit-btn like-btn" data-movie-id="DILAN_1990">
+                    <button id="likeButton" class="submit-btn like-btn" data-movie-id="<?= $watchId; ?>">
                         <i class="fas fa-thumbs-up"></i> <span id="likeText">Suka</span>
                     </button>
                     <a href="daftar tonton.php" class="submit-btn" style="text-decoration: none; display: inline-block; background-color: #333;"><i class="fas fa-bookmark"></i> Daftar Tonton</a>
                     
-                    <a href="ulasan_dilan1990.php" class="submit-btn review-link" style="text-decoration: none; display: inline-block;">
+                    <a href="<?= htmlspecialchars($allReviewsLink); ?>" class="submit-btn review-link" style="text-decoration: none; display: inline-block;">
                         <i class="fas fa-eye"></i> Lihat Semua Ulasan
                     </a>
                 </div>
@@ -306,7 +348,7 @@ if (isset($_GET['fetch_data']) && $_GET['fetch_data'] == 1) {
         const WATCHLIST_KEY = 'cineScopeWatchlist';
         const CURRENT_USER_EMAIL = localStorage.getItem('cineScopeCurrentUser') || 'guest@cinescope.com';
         const MOVIE_DATA = {
-            id: 'DILAN_1990',
+            id: '<?= $watchId; ?>',
             title: '<?= addslashes($title); ?>',
             poster: '<?= addslashes($posterPath); ?>',
             genre: '<?= addslashes($genre); ?>'
@@ -320,7 +362,8 @@ if (isset($_GET['fetch_data']) && $_GET['fetch_data'] == 1) {
         const likeText = document.getElementById('likeText');
         const trailerButton = document.getElementById('trailerButton');
 
-        const TRAILER_URL = 'uploads/videos/Official Trailer Dilan 1990.mp4';
+        const TRAILER_URL = <?= json_encode($trailerHref, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP); ?>;
+        const SELF_URL = location.pathname + '?id=<?= $MOVIE_ID; ?>';   // halaman ini + ID film
 
         function getWatchlist() {
             const watchlistData = JSON.parse(localStorage.getItem(WATCHLIST_KEY)) || {};
@@ -367,7 +410,7 @@ if (isset($_GET['fetch_data']) && $_GET['fetch_data'] == 1) {
             submitButton.disabled = true;
             submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Memuat...';
             
-            fetch('Dilan 1990.php?fetch_data=1')
+            fetch(SELF_URL + '&fetch_data=1')
             .then(response => response.json())
             .then(data => {
                 averageRatingSpan.textContent = data.averageRating + '/5';
@@ -400,7 +443,7 @@ if (isset($_GET['fetch_data']) && $_GET['fetch_data'] == 1) {
             submitButton.disabled = true;
             submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Mengirim...';
 
-            fetch('Dilan 1990.php', {
+            fetch(SELF_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
                 body: formData.toString()
@@ -435,6 +478,7 @@ if (isset($_GET['fetch_data']) && $_GET['fetch_data'] == 1) {
         });
 
         trailerButton.addEventListener('click', function() {
+            if (!TRAILER_URL) { alert('Trailer untuk film ini belum tersedia.'); return; }
             window.open(TRAILER_URL, '_blank');
         });
     </script>

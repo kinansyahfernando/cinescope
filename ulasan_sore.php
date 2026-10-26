@@ -12,7 +12,8 @@ try {
     die("❌ Database Connection Error: " . $e->getMessage());
 }
 
-$movieId = 1;
+// Film bisa dipilih lewat ?id= (film dummy / film upload admin). Tanpa ?id= tetap film Sore (ID 1).
+$movieId = isset($_GET['id']) ? (int)$_GET['id'] : 1;
 
 $movieStmt = $pdo->prepare("SELECT * FROM movies WHERE id = ?");
 $movieStmt->execute([$movieId]);
@@ -50,7 +51,7 @@ $posterPath = getPosterPath($movie['poster']);
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=1200, initial-scale=0.35, user-scalable=yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Ulasan Saya - <?= htmlspecialchars($movie['title']) ?> | CineScope</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
@@ -76,6 +77,13 @@ $posterPath = getPosterPath($movie['poster']);
         .rating-display { margin-bottom: 10px; }
         .review-item p { margin-bottom: 10px; font-size: 1em; color: #e0e0e0; }
         .reviewer-info { font-size: 0.85em; color: #aaa; text-align: right; border-top: 1px dashed #555; padding-top: 5px; }
+        @media (max-width: 640px) {
+            body { padding: 10px; }
+            .container { padding: 14px; }
+            .movie-header { flex-direction: column; align-items: center; text-align: center; }
+            .movie-info h1 { font-size: 1.5em; }
+            .rating-summary { justify-content: center; }
+        }
     </style>
 </head>
 <body>
