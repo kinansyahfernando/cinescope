@@ -4,10 +4,10 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 session_start();
 
-$host     = '127.0.0.1';   // atau 'localhost'
-$dbname   = 'cinescope';   // SAMA dengan config.php, index.php, user.php (ubah di sini kalau nama databasemu lain)
+$host = '127.0.0.1'; // atau 'localhost'
+$dbname = 'cinescope'; // SAMA dengan config.php, index.php, user.php (ubah di sini kalau nama databasemu lain)
 $username = 'root';
-$password = '';            // default Laragon kosong
+$password = ''; // default Laragon kosong
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
@@ -23,9 +23,30 @@ if (empty($_SESSION['user_id'])) {
     header('Location: login.php');
     exit;
 }
-if (($_SESSION['role'] ?? '') !== 'admin') {
+
+// REVISI: role dicek langsung dari database (bukan hanya dari sesi), tidak peka huruf besar/kecil.
+// Kalau akun sudah dihapus dari menu Users, sesinya otomatis dibatalkan.
+$meRow = null;
+try {
+    $s = $pdo->prepare("SELECT username, email, role FROM users WHERE id = ?");
+    $s->execute([(int)$_SESSION['user_id']]);
+    $meRow = $s->fetch(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {}
+
+if (!$meRow) {
+    $_SESSION = [];
+    session_destroy();
+    header('Location: login.php?error=' . urlencode('Akun tidak ditemukan, silakan login lagi.'));
+    exit;
+}
+
+$_SESSION['role'] = strtolower(trim((string)($meRow['role'] ?? '')));
+
+if ($_SESSION['role'] !== 'admin') {
     http_response_code(403);
-    die('<!DOCTYPE html><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><body style="font-family:sans-serif;background:#0a0a0a;color:#fff;text-align:center;padding:60px 20px"><h1>403 - Akses ditolak</h1><p style="color:#aaa;margin:12px 0 20px">Halaman ini khusus admin.</p><a style="color:#e50914;font-weight:700" href="user.php">&larr; Kembali</a></body>');
+    $who = htmlspecialchars(($meRow['username'] ?? '?') . ' (' . ($meRow['email'] ?? '?') . ')');
+    $role = htmlspecialchars((string)($meRow['role'] ?? ''));
+    die('<!DOCTYPE html><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><body style="font-family:sans-serif;background:#0a0a0a;color:#fff;text-align:center;padding:60px 20px"><h1>403 - Akses ditolak</h1><p style="color:#aaa;margin:12px 0 8px">Halaman ini khusus admin.</p><p style="color:#aaa;margin:0 0 20px">Kamu login sebagai <strong style="color:#fff">' . $who . '</strong> dengan role <strong style="color:#fff">"' . $role . '"</strong>.<br>Login pakai akun admin, atau ubah kolom <code>role</code> akun ini menjadi <code>admin</code> di tabel <code>users</code> (phpMyAdmin).</p><a style="color:#e50914;font-weight:700" href="logout.php">Logout &amp; login ulang</a> &nbsp;|&nbsp; <a style="color:#e50914;font-weight:700" href="user.php">&larr; Kembali</a></body>');
 }
 
 // Kolom angka MySQL menolak string kosong ('') -> ubah jadi NULL. Inilah penyebab upload film gagal
@@ -67,11 +88,17 @@ try {
     if (!in_array('release_date', $cols)) $pdo->exec("ALTER TABLE movies ADD COLUMN release_date DATE NULL");
     if (!in_array('average_rating', $cols)) $pdo->exec("ALTER TABLE movies ADD COLUMN average_rating DECIMAL(3,1) DEFAULT 0");
     if (!in_array('cast', $cols)) $pdo->exec("ALTER TABLE movies ADD COLUMN `cast` VARCHAR(255) NULL");
-    
     $rcols = $pdo->query("SHOW COLUMNS FROM reviews")->fetchAll(PDO::FETCH_COLUMN);
     if (!in_array('user_name', $rcols)) $pdo->exec("ALTER TABLE reviews ADD COLUMN user_name VARCHAR(100) NULL");
     if (!in_array('created_at', $rcols)) $pdo->exec("ALTER TABLE reviews ADD COLUMN created_at DATETIME NULL");
     if (!in_array('updated_at', $rcols)) $pdo->exec("ALTER TABLE reviews ADD COLUMN updated_at DATETIME NULL");
+} catch (PDOException $e) {}
+
+// REVISI: kolom pelacak login user (dipakai menu Users)
+try {
+    $ucols = $pdo->query("SHOW COLUMNS FROM users")->fetchAll(PDO::FETCH_COLUMN);
+    if (!in_array('last_login', $ucols)) $pdo->exec("ALTER TABLE users ADD COLUMN last_login DATETIME NULL");
+    if (!in_array('login_count', $ucols)) $pdo->exec("ALTER TABLE users ADD COLUMN login_count INT NOT NULL DEFAULT 0");
 } catch (PDOException $e) {}
 
 foreach (['uploads', 'uploads/posters', 'uploads/videos'] as $dir) {
@@ -81,33 +108,31 @@ foreach (['uploads', 'uploads/posters', 'uploads/videos'] as $dir) {
 // ============ FILM CONTOH (disimpan di database, jadi muncul di admin, beranda, dan halaman user) ============
 function sampleMovieList() {
     return array(
-        array('Bayangan Senja',        2024, 112, 'Drama',       'Raka Pradipta',  'Dimas Anggara, Laras Wulandari', 'Seorang fotografer kembali ke kota kecilnya dan menemukan rahasia keluarga yang lama terkubur.'),
-        array('Langit Terakhir',       2025, 128, 'Fantasi',     'Maya Kusuma',    'Arka Wijaya, Nadia Safira',      'Sebuah kerajaan di atas awan terancam runtuh, dan hanya seorang anak penjaga mercusuar yang bisa menyelamatkannya.'),
-        array('Jejak di Lorong Sunyi', 2023, 105, 'Misteri',     'Bagas Hartono',  'Reza Mahendra, Tika Permata',    'Satu per satu penghuni gang tua menghilang, dan seorang jurnalis muda mulai menyelidikinya.'),
-        array('Kota Tanpa Nama',       2024, 118, 'Aksi',        'Yoga Santosa',   'Fajar Nugraha, Sinta Maheswari', 'Mantan agen rahasia dipaksa kembali bertugas ketika kota tempatnya bersembunyi diserang.'),
-        array('Rumah di Ujung Jalan',  2022, 98,  'Horor',       'Dewi Anggraini', 'Bimo Setiawan, Citra Ayudia',    'Keluarga yang baru pindah mulai mendengar suara aneh dari rumah kosong di ujung jalan.'),
-        array('Cinta Dua Musim',       2025, 109, 'Romantis',    'Intan Maharani', 'Rafi Aditya, Keisha Putri',      'Dua orang asing bertemu di musim hujan dan harus memilih saat kemarau tiba.'),
-        array('Tawa di Perantauan',    2023, 101, 'Komedi',      'Hendra Wibowo',  'Joko Prasetyo, Mira Lestari',    'Tiga sahabat merantau ke Jakarta dengan modal nekat dan menghadapi kekacauan demi kekacauan.'),
-        array('Samudra Biru',          2024, 121, 'Petualangan', 'Galih Ramadhan', 'Satria Mahesa, Dinda Kirana',    'Ekspedisi mencari pulau legenda membawa sekelompok remaja melewati badai dan teka-teki kuno.'),
+        array('Bayangan Senja', 2024, 112, 'Drama', 'Raka Pradipta', 'Dimas Anggara, Laras Wulandari', 'Seorang fotografer kembali ke kota kecilnya dan menemukan rahasia keluarga yang lama terkubur.'),
+        array('Langit Terakhir', 2025, 128, 'Fantasi', 'Maya Kusuma', 'Arka Wijaya, Nadia Safira', 'Sebuah kerajaan di atas awan terancam runtuh, dan hanya seorang anak penjaga mercusuar yang bisa menyelamatkannya.'),
+        array('Jejak di Lorong Sunyi', 2023, 105, 'Misteri', 'Bagas Hartono', 'Reza Mahendra, Tika Permata', 'Satu per satu penghuni gang tua menghilang, dan seorang jurnalis muda mulai menyelidikinya.'),
+        array('Kota Tanpa Nama', 2024, 118, 'Aksi', 'Yoga Santosa', 'Fajar Nugraha, Sinta Maheswari', 'Mantan agen rahasia dipaksa kembali bertugas ketika kota tempatnya bersembunyi diserang.'),
+        array('Rumah di Ujung Jalan', 2022, 98, 'Horor', 'Dewi Anggraini', 'Bimo Setiawan, Citra Ayudia', 'Keluarga yang baru pindah mulai mendengar suara aneh dari rumah kosong di ujung jalan.'),
+        array('Cinta Dua Musim', 2025, 109, 'Romantis', 'Intan Maharani', 'Rafi Aditya, Keisha Putri', 'Dua orang asing bertemu di musim hujan dan harus memilih saat kemarau tiba.'),
+        array('Tawa di Perantauan', 2023, 101, 'Komedi', 'Hendra Wibowo', 'Joko Prasetyo, Mira Lestari', 'Tiga sahabat merantau ke Jakarta dengan modal nekat dan menghadapi kekacauan demi kekacauan.'),
+        array('Samudra Biru', 2024, 121, 'Petualangan', 'Galih Ramadhan', 'Satria Mahesa, Dinda Kirana', 'Ekspedisi mencari pulau legenda membawa sekelompok remaja melewati badai dan teka-teki kuno.'),
     );
 }
 
 function seedSampleMovies(PDO $pdo) {
-    $cols  = $pdo->query("SHOW COLUMNS FROM movies")->fetchAll(PDO::FETCH_COLUMN);
-    $old   = '2000-01-01 00:00:00';   // tanggal lama, supaya tidak menyalip film asli yang baru diupload
+    $cols = $pdo->query("SHOW COLUMNS FROM movies")->fetchAll(PDO::FETCH_COLUMN);
+    $old = '2000-01-01 00:00:00'; // tanggal lama, supaya tidak menyalip film asli yang baru diupload
     foreach (sampleMovieList() as $d) {
         $check = $pdo->prepare("SELECT COUNT(*) FROM movies WHERE title = ?");
         $check->execute(array($d[0]));
-        if ((int)$check->fetchColumn() > 0) continue;   // judul sudah ada -> lewati
-
+        if ((int)$check->fetchColumn() > 0) continue; // judul sudah ada -> lewati
         $data = array(
             'title' => $d[0], 'release_year' => $d[1], 'duration' => $d[2], 'genre' => $d[3],
             'director' => $d[4], 'cast' => $d[5], 'synopsis' => $d[6],
             'poster' => '', 'trailer_url' => '', 'status' => 'released',
             'average_rating' => 0, 'created_at' => $old, 'released_at' => $old,
         );
-        $data = array_intersect_key($data, array_flip($cols));   // hanya kolom yang benar-benar ada
-
+        $data = array_intersect_key($data, array_flip($cols)); // hanya kolom yang benar-benar ada
         $names = array();
         foreach (array_keys($data) as $c) $names[] = '`' . $c . '`';
         $sql = 'INSERT INTO movies (' . implode(',', $names) . ') VALUES (' . implode(',', array_fill(0, count($data), '?')) . ')';
@@ -154,30 +179,24 @@ function updateMovieAverageRating(PDO $pdo, int $movieId) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
     try {
         $movie_id = (int)($_POST['movie_id'] ?? 0);
-        $user_id  = (int)($_POST['user_id'] ?? 0);
-        $rating   = (float)($_POST['rating'] ?? 0);
+        $user_id = (int)($_POST['user_id'] ?? 0);
+        $rating = (float)($_POST['rating'] ?? 0);
         $review_text = trim($_POST['review_text'] ?? '');
-
         if ($movie_id <= 0) throw new Exception("Film harus dipilih!");
-        if ($user_id <= 0)  throw new Exception("User harus dipilih!");
+        if ($user_id <= 0) throw new Exception("User harus dipilih!");
         if ($rating < 1 || $rating > 5) throw new Exception("Rating harus 1-5!");
-
         $s = $pdo->prepare("SELECT id, title FROM movies WHERE id = ?");
         $s->execute([$movie_id]);
         $movieData = $s->fetch(PDO::FETCH_ASSOC);
         if (!$movieData) throw new Exception("Film tidak ditemukan!");
-
         $s = $pdo->prepare("SELECT id, username, full_name FROM users WHERE id = ?");
         $s->execute([$user_id]);
         $userData = $s->fetch(PDO::FETCH_ASSOC);
         if (!$userData) throw new Exception("User tidak ditemukan!");
-
         $userName = !empty($userData['full_name']) ? $userData['full_name'] : $userData['username'];
         $reviewTextVal = !empty($review_text) ? $review_text : null;
-
         $ins = $pdo->prepare("INSERT INTO reviews (movie_id, user_id, rating, review_text, user_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())");
         $ins->execute([$movie_id, $user_id, $rating, $reviewTextVal, $userName]);
-
         updateMovieAverageRating($pdo, $movie_id);
         $_SESSION['success_message'] = "Review berhasil ditambahkan untuk: " . htmlspecialchars($movieData['title']);
         header("Location: admin.php?action=reviews");
@@ -191,26 +210,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_review'])) {
 // ============ CREATE MOVIE ============
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['create_movie'])) {
     $posterPath = savePosterUpload('');
-    if ($messageType !== 'error') {   // poster ditolak -> jangan simpan, tampilkan pesan error di form
-    $status = normalizeStatus($_POST['status'] ?? 'released');
-    $releaseDate = !empty($_POST['release_date']) ? $_POST['release_date'] : null;
-
-    try {
-        $sql = "INSERT INTO movies (title, release_year, duration, genre, director, `cast`, synopsis, poster, trailer_url, status, release_date, average_rating, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW())";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([
-            $_POST['title'], nzi($_POST['release_year'] ?? ''), nzi($_POST['duration'] ?? ''),
-            $_POST['genre'], $_POST['director'], $_POST['cast'] ?? '',
-            $_POST['synopsis'], $posterPath, $_POST['trailer_url'],
-            $status, $releaseDate
-        ]);
-    } catch (PDOException $e) {
-        $sql = "INSERT INTO movies (title, release_year, duration, genre, director, synopsis, poster, trailer_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([$_POST['title'], nzi($_POST['release_year'] ?? ''), nzi($_POST['duration'] ?? ''), $_POST['genre'], $_POST['director'], $_POST['synopsis'], $posterPath, $_POST['trailer_url']]);
-    }
-    header("Location: admin.php?action=movies&msg=created");
-    exit;
+    if ($messageType !== 'error') { // poster ditolak -> jangan simpan, tampilkan pesan error di form
+        $status = normalizeStatus($_POST['status'] ?? 'released');
+        $releaseDate = !empty($_POST['release_date']) ? $_POST['release_date'] : null;
+        try {
+            $sql = "INSERT INTO movies (title, release_year, duration, genre, director, `cast`, synopsis, poster, trailer_url, status, release_date, average_rating, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW())";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                $_POST['title'], nzi($_POST['release_year'] ?? ''), nzi($_POST['duration'] ?? ''),
+                $_POST['genre'], $_POST['director'], $_POST['cast'] ?? '',
+                $_POST['synopsis'], $posterPath, $_POST['trailer_url'],
+                $status, $releaseDate
+            ]);
+        } catch (PDOException $e) {
+            $sql = "INSERT INTO movies (title, release_year, duration, genre, director, synopsis, poster, trailer_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([$_POST['title'], nzi($_POST['release_year'] ?? ''), nzi($_POST['duration'] ?? ''), $_POST['genre'], $_POST['director'], $_POST['synopsis'], $posterPath, $_POST['trailer_url']]);
+        }
+        header("Location: admin.php?action=movies&msg=created");
+        exit;
     }
 }
 
@@ -220,27 +238,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_movie'])) {
     $posterPath = $_POST['existing_poster'] ?? '';
     $posterPath = savePosterUpload($posterPath);
     if ($messageType !== 'error') {
-
-    try {
-        $sql = "UPDATE movies SET title=?, release_year=?, duration=?, genre=?, director=?, `cast`=?, synopsis=?, poster=?, trailer_url=?, status=?, release_date=?, updated_at=NOW() WHERE id=?";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([
-            $_POST['title'], nzi($_POST['release_year'] ?? ''), nzi($_POST['duration'] ?? ''),
-            $_POST['genre'], $_POST['director'], $_POST['cast'] ?? '',
-            $_POST['synopsis'], $posterPath, $_POST['trailer_url'],
-            normalizeStatus($_POST['status'] ?? 'released'),
-            !empty($_POST['release_date']) ? $_POST['release_date'] : null,
-            $movieId
-        ]);
-    } catch (PDOException $e) {
-        $sql = "UPDATE movies SET title=?, release_year=?, duration=?, genre=?, director=?, synopsis=?, poster=?, trailer_url=?, updated_at=NOW() WHERE id=?";
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([$_POST['title'], nzi($_POST['release_year'] ?? ''), nzi($_POST['duration'] ?? ''), $_POST['genre'], $_POST['director'], $_POST['synopsis'], $posterPath, $_POST['trailer_url'], $movieId]);
-    }
-
-    updateMovieAverageRating($pdo, $movieId);
-    header("Location: admin.php?action=movies&msg=updated");
-    exit;
+        try {
+            $sql = "UPDATE movies SET title=?, release_year=?, duration=?, genre=?, director=?, `cast`=?, synopsis=?, poster=?, trailer_url=?, status=?, release_date=?, updated_at=NOW() WHERE id=?";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                $_POST['title'], nzi($_POST['release_year'] ?? ''), nzi($_POST['duration'] ?? ''),
+                $_POST['genre'], $_POST['director'], $_POST['cast'] ?? '',
+                $_POST['synopsis'], $posterPath, $_POST['trailer_url'],
+                normalizeStatus($_POST['status'] ?? 'released'),
+                !empty($_POST['release_date']) ? $_POST['release_date'] : null,
+                $movieId
+            ]);
+        } catch (PDOException $e) {
+            $sql = "UPDATE movies SET title=?, release_year=?, duration=?, genre=?, director=?, synopsis=?, poster=?, trailer_url=?, updated_at=NOW() WHERE id=?";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([$_POST['title'], nzi($_POST['release_year'] ?? ''), nzi($_POST['duration'] ?? ''), $_POST['genre'], $_POST['director'], $_POST['synopsis'], $posterPath, $_POST['trailer_url'], $movieId]);
+        }
+        updateMovieAverageRating($pdo, $movieId);
+        header("Location: admin.php?action=movies&msg=updated");
+        exit;
     }
 }
 
@@ -272,6 +288,47 @@ if (isset($_GET['delete_review']) && is_numeric($_GET['delete_review'])) {
     exit;
 }
 
+// ============ DELETE USER (akun + semua datanya dihapus) ============
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_user'])) {
+    $uid = (int)$_POST['delete_user'];
+    $result = 'user_error';
+    if ($uid > 0 && $uid !== (int)$_SESSION['user_id']) {
+        try {
+            $s = $pdo->prepare("SELECT role FROM users WHERE id = ?");
+            $s->execute([$uid]);
+            $u = $s->fetch(PDO::FETCH_ASSOC);
+            if ($u && ($u['role'] ?? '') !== 'admin') {
+                $s = $pdo->prepare("SELECT DISTINCT movie_id FROM reviews WHERE user_id = ?");
+                $s->execute([$uid]);
+                $affectedMovies = $s->fetchAll(PDO::FETCH_COLUMN);
+
+                $pdo->beginTransaction();
+                // data opsional (abaikan kalau tabelnya tidak ada)
+                $optional = [
+                    ["DELETE FROM review_helpful WHERE user_id = ? OR review_id IN (SELECT id FROM reviews WHERE user_id = ?)", [$uid, $uid]],
+                    ["DELETE FROM watchlist WHERE user_id = ?", [$uid]],
+                    ["DELETE FROM daftar_tonton WHERE user_id = ?", [$uid]],
+                    ["DELETE FROM watchlists WHERE user_id = ?", [$uid]],
+                ];
+                foreach ($optional as $q) {
+                    try { $pdo->prepare($q[0])->execute($q[1]); } catch (PDOException $e) {}
+                }
+                $pdo->prepare("DELETE FROM reviews WHERE user_id = ?")->execute([$uid]);
+                $pdo->prepare("DELETE FROM users WHERE id = ?")->execute([$uid]);
+                $pdo->commit();
+
+                foreach ($affectedMovies as $mid) updateMovieAverageRating($pdo, (int)$mid);
+                $result = 'user_deleted';
+            }
+        } catch (PDOException $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            error_log('delete_user: ' . $e->getMessage());
+        }
+    }
+    header('Location: admin.php?action=users&msg=' . $result);
+    exit;
+}
+
 if (isset($_SESSION['success_message'])) {
     $message = $_SESSION['success_message'];
     $messageType = 'success';
@@ -283,11 +340,13 @@ if (isset($_GET['msg'])) {
         'created' => 'Film berhasil ditambahkan!',
         'updated' => 'Film berhasil diupdate!',
         'deleted' => 'Film berhasil dihapus!',
-        'review_deleted' => 'Review berhasil dihapus!'
+        'review_deleted' => 'Review berhasil dihapus!',
+        'user_deleted' => 'User beserta semua datanya (ulasan, daftar tonton) berhasil dihapus. Kalau mau, dia bisa daftar lagi sebagai akun baru.',
+        'user_error' => 'User tidak bisa dihapus (akun admin / akun yang sedang kamu pakai tidak boleh dihapus).'
     ];
     if (isset($msgs[$_GET['msg']])) {
         $message = $msgs[$_GET['msg']];
-        $messageType = 'success';
+        $messageType = (strpos($_GET['msg'], 'error') !== false) ? 'error' : 'success';
     }
 }
 
@@ -304,16 +363,22 @@ foreach ($movies as $m) {
     if (($m['status'] ?? 'released') === 'coming_soon') $countComing++;
     else $countReleased++;
 }
-
 $filteredMovies = [];
 foreach ($movies as $m) {
     $s = ($m['status'] ?? 'released') === 'coming_soon' ? 'coming_soon' : 'released';
     if ($statusFilter === 'all' || $s === $statusFilter) $filteredMovies[] = $m;
 }
 
+// REVISI: data untuk menu Users
+$adminUsers = [];
+if ($action === 'users') {
+    try {
+        $adminUsers = $pdo->query("SELECT u.*, (SELECT COUNT(*) FROM reviews r WHERE r.user_id = u.id) AS review_count FROM users u ORDER BY (u.last_login IS NULL) ASC, u.last_login DESC, u.id DESC")->fetchAll(PDO::FETCH_ASSOC);
+    } catch (PDOException $e) { $adminUsers = []; }
+}
+
 $moviesList = $pdo->query("SELECT id, title FROM movies ORDER BY title ASC")->fetchAll(PDO::FETCH_ASSOC);
 $usersList = $pdo->query("SELECT id, username, full_name FROM users ORDER BY username ASC")->fetchAll(PDO::FETCH_ASSOC);
-
 $totalMovies = count($movies);
 $totalReviews = (int)$pdo->query("SELECT COUNT(*) FROM reviews")->fetchColumn();
 $avgRating = $pdo->query("SELECT AVG(average_rating) FROM movies WHERE average_rating > 0")->fetchColumn();
@@ -391,14 +456,13 @@ table td{padding:15px;border-bottom:1px solid #e0e0e0}
 <li><a href="?action=add" class="<?= $action === 'add' ? 'active' : '' ?>"><i class="fas fa-plus-circle"></i> Tambah Film</a></li>
 <li><a href="?action=reviews" class="<?= $action === 'reviews' ? 'active' : '' ?>"><i class="fas fa-star"></i> Kelola Reviews</a></li>
 <li><a href="?action=add_review" class="<?= $action === 'add_review' ? 'active' : '' ?>"><i class="fas fa-comment-dots"></i> Tambah Review</a></li>
+<li><a href="?action=users" class="<?= $action === 'users' ? 'active' : '' ?>"><i class="fas fa-users"></i> Users</a></li>
 </ul>
 </div>
-
 <div class="main-content">
 <?php if ($action !== 'dashboard'): ?>
 <a href="?action=<?= ($action === 'edit' || $action === 'add' || $action === 'add_review') ? 'movies' : 'dashboard' ?>" class="btn btn-primary" style="margin-bottom:20px"><i class="fas fa-arrow-left"></i> Kembali</a>
 <?php endif; ?>
-
 <?php if ($message): ?><div class="message <?= $messageType ?>"><?= $message ?></div><?php endif; ?>
 
 <?php if ($action === 'dashboard'): ?>
@@ -474,18 +538,15 @@ table td{padding:15px;border-bottom:1px solid #e0e0e0}
 <input type="hidden" name="movie_id" value="<?= $editMovie['id'] ?>">
 <input type="hidden" name="existing_poster" value="<?= htmlspecialchars($editMovie['poster'] ?? '') ?>">
 <?php endif; ?>
-
 <div class="form-group">
 <label>Judul Film *</label>
 <input type="text" name="title" required value="<?= htmlspecialchars($editMovie['title'] ?? '') ?>">
 </div>
-
 <div class="form-row-3">
 <div class="form-group"><label>Tahun *</label><input type="number" name="release_year" required value="<?= htmlspecialchars($editMovie['release_year'] ?? date('Y')) ?>"></div>
 <div class="form-group"><label>Durasi (menit)</label><input type="number" name="duration" value="<?= htmlspecialchars($editMovie['duration'] ?? '') ?>"></div>
 <div class="form-group"><label>Genre *</label><input type="text" name="genre" required value="<?= htmlspecialchars($editMovie['genre'] ?? '') ?>"></div>
 </div>
-
 <div class="form-row">
 <div class="form-group">
 <label>Tampilkan di *</label>
@@ -500,13 +561,11 @@ table td{padding:15px;border-bottom:1px solid #e0e0e0}
 <input type="date" name="release_date" value="<?= htmlspecialchars($editMovie['release_date'] ?? '') ?>">
 </div>
 </div>
-
 <div class="form-group"><label>Sutradara</label><input type="text" name="director" value="<?= htmlspecialchars($editMovie['director'] ?? '') ?>"></div>
 <div class="form-group"><label>Pemain (Cast)</label><input type="text" name="cast" value="<?= htmlspecialchars($editMovie['cast'] ?? '') ?>" placeholder="Pisahkan dengan koma"></div>
 <div class="form-group"><label>Sinopsis *</label><textarea name="synopsis" required><?= htmlspecialchars($editMovie['synopsis'] ?? '') ?></textarea></div>
 <div class="form-group"><label>Upload Poster</label><input type="file" name="poster" accept="image/*"><?php if(!empty($editMovie['poster'])): ?><img src="<?= $editMovie['poster'] ?>" style="max-width:150px;margin-top:10px;border-radius:8px"><?php endif; ?></div>
 <div class="form-group"><label>URL Trailer</label><input type="url" name="trailer_url" value="<?= htmlspecialchars($editMovie['trailer_url'] ?? '') ?>"></div>
-
 <div style="display:flex;gap:10px;margin-top:20px">
 <button type="submit" name="<?= $action === 'edit' ? 'update_movie' : 'create_movie' ?>" class="btn btn-primary"><i class="fas fa-save"></i> <?= $action === 'edit' ? 'Update' : 'Simpan' ?></button>
 <a href="?action=movies" class="btn btn-danger"><i class="fas fa-times"></i> Batal</a>
@@ -553,6 +612,44 @@ table td{padding:15px;border-bottom:1px solid #e0e0e0}
 </tbody></table>
 <?php else: ?>
 <div class="empty-state"><i class="fas fa-comments"></i><h3>Belum ada review</h3><a href="?action=add_review" class="btn btn-primary" style="margin-top:20px"><i class="fas fa-plus"></i> Tambah</a></div>
+<?php endif; ?>
+</div>
+<?php endif; ?>
+
+<?php if ($action === 'users'): ?>
+<div class="header"><h2>👥 Users</h2><span class="rating-badge"><?= count($adminUsers) ?> user terdaftar</span></div>
+<div class="card">
+<?php if (count($adminUsers) > 0): ?>
+<div style="overflow-x:auto">
+<table><thead><tr><th>ID</th><th>Nama</th><th>Email</th><th>Role</th><th>Login Terakhir</th><th>Jml Login</th><th>Ulasan</th><th>Terdaftar</th><th>Aksi</th></tr></thead><tbody>
+<?php foreach ($adminUsers as $u): ?>
+<?php $isAdminRow = (($u['role'] ?? '') === 'admin'); $isSelf = ((int)$u['id'] === (int)$_SESSION['user_id']); ?>
+<tr>
+<td><?= (int)$u['id'] ?></td>
+<td><strong><?= htmlspecialchars(!empty($u['full_name']) ? $u['full_name'] : ($u['username'] ?? '-')) ?></strong><?php if (!empty($u['full_name']) && !empty($u['username'])): ?><br><small style="color:#888">@<?= htmlspecialchars($u['username']) ?></small><?php endif; ?></td>
+<td><?= htmlspecialchars($u['email'] ?? '-') ?></td>
+<td><span class="rating-badge" style="background:<?= $isAdminRow ? '#764ba2;color:#fff' : '#e9ecef;color:#333' ?>;font-size:.75em"><?= htmlspecialchars($u['role'] ?? 'user') ?></span></td>
+<td><?= !empty($u['last_login']) ? date('d/m/Y H:i', strtotime($u['last_login'])) : '<span style="color:#999">Belum tercatat</span>' ?></td>
+<td><?= (int)($u['login_count'] ?? 0) ?></td>
+<td><?= (int)$u['review_count'] ?></td>
+<td><?= !empty($u['created_at']) ? date('d/m/Y', strtotime($u['created_at'])) : '-' ?></td>
+<td>
+<?php if ($isAdminRow || $isSelf): ?>
+<span style="color:#aaa;font-size:.85em"><?= $isSelf ? 'Akun kamu' : 'Admin' ?></span>
+<?php else: ?>
+<form method="POST" style="display:inline" onsubmit="return confirm('Hapus user ini beserta SEMUA ulasan dan daftar tontonnya? Tindakan ini tidak bisa dibatalkan.')">
+<input type="hidden" name="delete_user" value="<?= (int)$u['id'] ?>">
+<button type="submit" class="btn btn-danger btn-sm"><i class="fas fa-trash"></i> Hapus</button>
+</form>
+<?php endif; ?>
+</td>
+</tr>
+<?php endforeach; ?>
+</tbody></table>
+</div>
+<p style="color:#888;font-size:.85em;margin-top:15px">Waktu login hanya tercatat sejak revisi ini dipasang. User yang belum login lagi akan tampil "Belum tercatat".</p>
+<?php else: ?>
+<div class="empty-state"><i class="fas fa-users"></i><h3>Belum ada user</h3></div>
 <?php endif; ?>
 </div>
 <?php endif; ?>
