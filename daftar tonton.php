@@ -69,18 +69,24 @@ function cs_watchlistTable(PDO $pdo) {
     }
 }
 
-// Halaman ulasan tiap film (ID film di tabel movies => file ulasan)
+// Halaman ulasan tiap film (ID film di tabel movies => file ulasan). Nama file yang benar-benar ada yang dipakai.
 function cs_reviewPage($movieId) {
     $map = array(
-        1 => 'ulasan_sore.php',
-        2 => 'ulasan_petaka_gunung_gede.php',
-        3 => 'ulasan_dilan1990.php',
-        4 => 'ulasan_rest_area.php',
-        5 => 'ulasan_tukartakdir.php',
-        6 => 'ulasan_rangga%26cinta.php',
+        1 => array('ulasan_sore.php', 'ulasan sore.php'),
+        2 => array('ulasan_petaka_gunung_gede.php', 'ulasan petaka gunung gede.php'),
+        3 => array('ulasan_dilan1990.php', 'ulasan dilan1990.php'),
+        4 => array('ulasan_rest_area.php', 'ulasan rest area.php'),
+        5 => array('ulasan_tukartakdir.php', 'ulasan tukartakdir.php'),
+        6 => array('ulasan_rangga_cinta.php', 'ulasan_rangga&cinta.php', 'ulasan rangga & cinta.php'),
     );
-    // Film baru dari admin dibuka lewat ulasan_sore.php?id=ID_FILM
-    $url = $map[(int)$movieId] ?? ('ulasan_sore.php?id=' . (int)$movieId);
+    $id    = (int)$movieId;
+    $known = isset($map[$id]);
+    $cands = $known ? $map[$id] : $map[1];   // film baru dari admin dibuka lewat ulasan_sore.php?id=ID_FILM
+    $file  = $cands[0];
+    foreach ($cands as $c) {
+        if (is_file(__DIR__ . '/' . $c)) { $file = $c; break; }
+    }
+    $url = rawurlencode($file) . ($known ? '' : '?id=' . $id);
     // from=watchlist: supaya tombol "Kembali" di halaman ulasan kembali ke Daftar Tonton ini
     return $url . (strpos($url, '?') === false ? '?' : '&') . 'from=watchlist';
 }

@@ -8,7 +8,7 @@ $welcomeUsername = isset($_GET['welcome']) ? htmlspecialchars($_GET['welcome']) 
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=1200, initial-scale=0.35, user-scalable=yes">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Masuk - CineScope</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -33,13 +33,14 @@ $welcomeUsername = isset($_GET['welcome']) ? htmlspecialchars($_GET['welcome']) 
             justify-content: center;
             align-items: center;
             color: var(--text-light);
+            padding: 70px 0 24px;
         }
         
         .auth-container {
             width: 90%;
             max-width: 600px;
             background-color: var(--card-dark);
-            padding: 40px;
+            padding: clamp(22px, 6vw, 40px);
             border-radius: 10px;
             box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
         }
@@ -53,7 +54,7 @@ $welcomeUsername = isset($_GET['welcome']) ? htmlspecialchars($_GET['welcome']) 
             border: 1px solid #444;
             color: white;
             border-radius: 5px;
-            font-size: 1em;
+            font-size: 16px;
         }
 
         .form-group input:focus {
@@ -262,7 +263,7 @@ $welcomeUsername = isset($_GET['welcome']) ? htmlspecialchars($_GET['welcome']) 
                 type="text"
                 name="email" 
                 id="email"
-                placeholder="Masukkan Email"
+                placeholder="Email atau username"
                 autocomplete="off"
                 autocapitalize="off"
                 spellcheck="false"
@@ -289,12 +290,6 @@ $welcomeUsername = isset($_GET['welcome']) ? htmlspecialchars($_GET['welcome']) 
     </form>
 
     <script>
-        // Force clear all inputs on page load
-        window.addEventListener('load', function() {
-            document.getElementById('email').value = '';
-            document.getElementById('password').value = '';
-        });
-
         // Clear inputs on page show (back/forward navigation)
         window.addEventListener('pageshow', function(event) {
             if (event.persisted) {
